@@ -360,12 +360,35 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       }).filter(s => !isNaN(s.curKg));
 
       setSummary(summaryItems);
-      writeSession(wb.Sheets[wsName], sd, form, nextWeek, substitutions, editedRepsObj);
       setNewWeekCreated(nextWeek >= 15);
 
-      // Write back to Drive
-      const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      await onSave(out);
+      // Collect ONLY the cells that need writing — no full file rewrite
+      const cellUpdates = [];
+      sd.exercises.forEach(ex => {
+        const fEx = form[ex.name]; if (!fEx) return;
+        ex.sets.forEach((set, si) => {
+          const f = fEx[si]; if (!f) return;
+          const slot = set.slots[nextWeek]; if (!slot) return;
+          if (f.kg !== '' && f.kg != null)
+            cellUpdates.push({ row: slot.rowIdx, col: slot.colKg, value: parseFloat(f.kg) });
+          if (f.reps !== '' && f.reps != null)
+            cellUpdates.push({ row: slot.rowIdx, col: slot.colReps, value: parseFloat(f.reps) });
+          if (f.rir !== '' && f.rir != null)
+            cellUpdates.push({ row: slot.rowIdx, col: slot.colRir, value: f.rir });
+          if (f.notes !== '' && f.notes != null)
+            cellUpdates.push({ row: slot.rowIdx, col: slot.colNotes, value: f.notes });
+          // Substituted exercise name
+          if (substitutions[ex.name])
+            cellUpdates.push({ row: slot.rowIdx, col: 1, value: substitutions[ex.name] });
+          // Edited reps objective
+          const editedRo = editedRepsObj[ex.name]?.[si];
+          if (editedRo != null)
+            cellUpdates.push({ row: set.repsObjRowIdx, col: set.repsObjColIdx, value: editedRo });
+        });
+      });
+
+      // Write only those cells via Sheets API — format is preserved
+      await onSave(wsName, cellUpdates);
       setScreen("done");
     } catch (err) {
       setSaveError(err.message);
