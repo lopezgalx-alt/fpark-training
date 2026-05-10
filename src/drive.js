@@ -1,6 +1,6 @@
 // ── GOOGLE DRIVE OAUTH ────────────────────────────────────────────────────────
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID
-const SCOPES = 'https://www.googleapis.com/auth/drive.file'
+const SCOPES = 'https://www.googleapis.com/auth/drive'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const FILE_NAME = 'ENTRENAMIENTO ALEJANDRO LOPEZ.xlsx'
 const DRIVE_FILE_ID = '1WEMvbLfERQl0E09p7cyjObsIP_uMegzL'
