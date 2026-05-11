@@ -18,7 +18,7 @@ function loadGIS() {
 export async function signIn() {
   await loadGIS()
   return new Promise((resolve, reject) => {
-    const saved = sessionStorage.getItem('gd_token')
+    const saved = localStorage.getItem('gd_token')
     if (saved) { accessToken = saved; resolve(saved); return }
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
@@ -26,7 +26,7 @@ export async function signIn() {
       callback: (resp) => {
         if (resp.error) { reject(new Error(resp.error)); return }
         accessToken = resp.access_token
-        sessionStorage.setItem('gd_token', accessToken)
+        localStorage.setItem('gd_token', accessToken)
         resolve(accessToken)
       },
     })
@@ -35,7 +35,7 @@ export async function signIn() {
 }
 
 export function isSignedIn() {
-  const saved = sessionStorage.getItem('gd_token')
+  const saved = localStorage.getItem('gd_token')
   if (saved) { accessToken = saved }
   return !!accessToken
 }
@@ -43,7 +43,7 @@ export function isSignedIn() {
 export function signOut() {
   if (accessToken) window.google?.accounts?.oauth2?.revoke(accessToken)
   accessToken = null
-  sessionStorage.removeItem('gd_token')
+  localStorage.removeItem('gd_token')
 }
 
 async function apiRequest(url, options = {}) {
