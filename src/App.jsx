@@ -4,12 +4,18 @@ import Tracker from './Tracker.jsx'
 
 const C = { accent: '#C8F135', dark: '#0D0D0D', card: '#161616', muted: '#555', text: '#E8E8E8', red: '#FF6B6B' }
 
+function withTimeout(promise, ms = 15000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout — la conexión tardó demasiado')), ms))
+  ])
+}
+
 export default function App() {
   const [authState, setAuthState] = useState('checking')
   const [error, setError] = useState(null)
   const [driveFile, setDriveFile] = useState(null)
   const [xlsxBuffer, setXlsxBuffer] = useState(null)
-  const [wsName, setWsName] = useState(null)
 
   useEffect(() => {
     if (isSignedIn()) loadFromDrive()
@@ -19,7 +25,7 @@ export default function App() {
   async function handleSignIn() {
     try {
       setAuthState('loading'); setError(null)
-      await signIn()
+      await withTimeout(signIn(), 20000)
       await loadFromDrive()
     } catch (e) {
       setError(e.message); setAuthState('signed-out')
@@ -29,9 +35,9 @@ export default function App() {
   async function loadFromDrive() {
     try {
       setAuthState('loading')
-      const file = await findFile()
+      const file = await withTimeout(findFile())
       if (!file) throw new Error('No se encontró el archivo en Drive.')
-      const buffer = await downloadFile(file.id)
+      const buffer = await withTimeout(downloadFile(file.id), 20000)
       setDriveFile(file)
       setXlsxBuffer(buffer)
       setAuthState('ready')
@@ -41,16 +47,14 @@ export default function App() {
     }
   }
 
-  // Called by Tracker with cell updates — writes directly to Sheets API
   async function handleSave(sheetName, cellUpdates) {
-    await writeCells(sheetName, cellUpdates)
-    // Reload from Drive so UI reflects saved data
-    const buffer = await downloadFile(driveFile.id)
+    await withTimeout(writeCells(sheetName, cellUpdates))
+    const buffer = await withTimeout(downloadFile(driveFile.id), 20000)
     setXlsxBuffer(buffer)
   }
 
   if (authState === 'checking' || authState === 'loading')
-    return <LoadingScreen message={authState === 'checking' ? 'Iniciando...' : 'Conectando con Drive...'} />
+    return <LoadingScreen message={authState === 'checking' ? 'Iniciando...' : 'Conectando con Drive...'} onCancel={() => { signOut(); setAuthState('signed-out') }} />
   if (authState === 'signed-out')
     return <SignInScreen onSignIn={handleSignIn} error={error} />
   if (authState === 'error')
@@ -60,7 +64,12 @@ export default function App() {
   return null
 }
 
-function LoadingScreen({ message }) {
+function LoadingScreen({ message, onCancel }) {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setSeconds(s => s + 1), 1000)
+    return () => clearInterval(t)
+  }, [])
   return (
     <div style={{ background: C.dark, minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: "'DM Mono','Courier New',monospace", color: C.text }}>
       <div style={{ fontSize: 10, color: C.muted, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 6 }}>Tracker de entreno</div>
@@ -68,7 +77,15 @@ function LoadingScreen({ message }) {
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {[0,1,2].map(i => <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent, animation: `pulse 1.2s ${i*0.2}s infinite` }} />)}
       </div>
-      <div style={{ fontSize: 11, color: C.muted }}>{message}</div>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>{message}</div>
+      {seconds > 5 && (
+        <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+          <div style={{ fontSize: 11, color: C.muted }}>Tardando más de lo normal...</div>
+          <button onClick={onCancel} style={{ background: 'none', border: '1px solid #333', color: C.muted, fontFamily: 'inherit', fontSize: 12, padding: '10px 20px', borderRadius: 20, cursor: 'pointer' }}>
+            Cancelar y reconectar
+          </button>
+        </div>
+      )}
       <style>{`@keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}`}</style>
     </div>
   )
