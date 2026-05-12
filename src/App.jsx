@@ -12,14 +12,21 @@ function withTimeout(promise, ms = 15000) {
 }
 
 export default function App() {
-  const [authState, setAuthState] = useState('checking')
+  const [authState, setAuthState] = useState('loading')
   const [error, setError] = useState(null)
   const [driveFile, setDriveFile] = useState(null)
   const [xlsxBuffer, setXlsxBuffer] = useState(null)
 
   useEffect(() => {
-    if (isSignedIn()) loadFromDrive()
-    else setAuthState('signed-out')
+    if (isSignedIn()) {
+      const timeout = setTimeout(() => {
+        setError('La conexión tardó demasiado. Comprueba tu conexión e inténtalo de nuevo.')
+        setAuthState('error')
+      }, 20000)
+      loadFromDrive().finally(() => clearTimeout(timeout))
+    } else {
+      setAuthState('signed-out')
+    }
   }, [])
 
   async function handleSignIn() {
@@ -53,8 +60,8 @@ export default function App() {
     setXlsxBuffer(buffer)
   }
 
-  if (authState === 'checking' || authState === 'loading')
-    return <LoadingScreen message={authState === 'checking' ? 'Iniciando...' : 'Conectando con Drive...'} onCancel={() => { signOut(); setAuthState('signed-out') }} />
+  if (authState === 'loading')
+    return <LoadingScreen message='Conectando con Drive...' onCancel={() => { signOut(); setAuthState('signed-out') }} />
   if (authState === 'signed-out')
     return <SignInScreen onSignIn={handleSignIn} error={error} />
   if (authState === 'error')
