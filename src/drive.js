@@ -1,5 +1,5 @@
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive'
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly'
 const SHEET_ID = '1lb3OXjy5mpAd4dbcE7y93yz7I7RGpE4I7APi3aZZBcE'
 
 let accessToken = null
@@ -25,7 +25,6 @@ function initTokenClient() {
   })
 }
 
-// Request a fresh token — silently if possible (prompt: '')
 function refreshToken(prompt = '') {
   return new Promise((resolve, reject) => {
     if (!tokenClient) { reject(new Error('Token client not initialized')); return }
@@ -65,13 +64,12 @@ async function apiRequest(url, options = {}, retry = true) {
     ...options,
     headers: { Authorization: `Bearer ${accessToken}`, ...(options.headers || {}) },
   })
-  // Token expired — try to refresh silently once
   if (resp.status === 401 && retry) {
     try {
       await loadGIS()
       if (!tokenClient) await initTokenClient()
-      await refreshToken('')  // silent refresh
-      return apiRequest(url, options, false)  // retry once
+      await refreshToken('')
+      return apiRequest(url, options, false)
     } catch {
       signOut()
       throw new Error('TOKEN_EXPIRED')
@@ -85,22 +83,14 @@ export async function findFile() {
 }
 
 export async function downloadFile() {
-  // Try up to 2 times — export can occasionally be slow
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const resp = await apiRequest(
-        `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=xlsx`
-      )
-      if (!resp.ok) {
-        const text = await resp.text()
-        throw new Error(`Error ${resp.status}: ${text.slice(0, 100)}`)
-      }
-      return resp.arrayBuffer()
-    } catch (e) {
-      if (attempt === 2) throw e
-      await new Promise(r => setTimeout(r, 2000)) // wait 2s before retry
-    }
+  const resp = await apiRequest(
+    `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=xlsx`
+  )
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`Error ${resp.status}: ${text.slice(0, 100)}`)
   }
+  return resp.arrayBuffer()
 }
 
 export async function writeCells(sheetName, cellUpdates) {
@@ -140,16 +130,4 @@ function colToLetter(col) {
     col = Math.floor((col - 1) / 26)
   }
   return letter
-}
-
-// Read sheet data directly via Sheets API (faster than export)
-export async function readSheetData(sheetName) {
-  const resp = await apiRequest(
-    `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}?includeGridData=true&ranges='${encodeURIComponent(sheetName)}'`
-  )
-  if (!resp.ok) {
-    const err = await resp.json()
-    throw new Error(err.error?.message || 'Error al leer el archivo')
-  }
-  return resp.json()
 }
