@@ -343,12 +343,28 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setScreen("log");
   };
 
-  // Auto-save a single cell when numpad confirms
-  const autoSaveCell = async (wsName, cellUpdates) => {
+  // Auto-save a single cell when numpad confirms + update local state
+  const autoSaveCell = async (wsName, cellUpdates, exName, si, field, value) => {
     setSaving(true);
     try {
       await onSave(wsName, cellUpdates);
       setSaveError(null);
+      // Update local parsed state so pre-fill works on re-entry
+      if (exName != null) {
+        setState(prev => {
+          const sessions = { ...prev.sessions };
+          const sd = sessions[selSession];
+          const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
+          const ex = sd.exercises.find(e => e.name === exName);
+          if (ex) {
+            const set = ex.sets[si];
+            if (set?.slots[nextWeek]) {
+              set.slots[nextWeek] = { ...set.slots[nextWeek], [field]: value };
+            }
+          }
+          return { ...prev, sessions };
+        });
+      }
     } catch (err) {
       setSaveError(err.message);
     } finally {
