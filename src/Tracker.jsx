@@ -114,13 +114,26 @@ function suggestProgression(prevKg, prevReps, repsObjStr) {
   const match = repsObjStr.match(/^(\d+)-(\d+)$/);
   if (!match) return null;
   const [, lo, hi] = match.map(Number);
-  if (reps <= hi) return null; // still in range or below, no weight increase needed
 
-  // +5% rounded to nearest gym increment
-  const raw = kg * 1.05;
-  const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
-  const newKg = Math.round(raw / inc) * inc;
-  return { kg: newKg, reps: lo, reason: `${prevReps} reps con ${kg}kg supera el rango (${repsObjStr}) → +5%` };
+  // Reps above range → suggest weight increase (+5%)
+  if (reps > hi) {
+    const raw = kg * 1.05;
+    const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
+    const newKg = Math.round(raw / inc) * inc;
+    return { type: "weight", kg: newKg, reps: lo, reason: `${prevReps} reps con ${kg}kg supera el rango (${repsObjStr}) → sube peso` };
+  }
+
+  // Reps within range but not at top → suggest more reps
+  // Increment: +1 for wide ranges (span ≥ 4), +2 for tight ranges (span ≤ 3) if far from top
+  if (reps >= lo && reps < hi) {
+    const span = hi - lo;
+    const gap = hi - reps;
+    const increment = gap >= 2 ? (span >= 4 ? 1 : 2) : 1;
+    const newReps = Math.min(reps + increment, hi);
+    return { type: "reps", kg, reps: newReps, reason: `${prevReps} reps en rango (${repsObjStr}) → intenta ${newReps} reps` };
+  }
+
+  return null;
 }
 
 // ── LOAD RECOMMENDATION based on previous week reps vs objective range ─────────
@@ -331,65 +344,12 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setScreen("log");
   };
 
-  const save = async () => {
-    setSaving(true); setSaveError(null);
+  // Auto-save a single cell immediately when numpad confirms
+  const autoSaveCell = async (wsName, cellUpdates) => {
+    setSaving(true);
     try {
-      const { wb, wsName, sessions } = state;
-      const sd = sessions[selSession];
-      const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
-      const prevWeek = nextWeek - 1;
-
-      // Build summary
-      const summaryItems = sd.exercises.map(ex => {
-        const cur = ex.sets[0]?.slots[nextWeek];
-        const prev = prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null;
-        const curKg = parseFloat(form[ex.name]?.[0]?.kg || cur?.kg);
-        const prevKg = parseFloat(prev?.kg);
-        const curReps = parseFloat(form[ex.name]?.[0]?.reps || cur?.reps);
-        const prevReps = parseFloat(prev?.reps);
-        let trend = "neutral";
-        if (!isNaN(curKg) && !isNaN(prevKg)) {
-          if (curKg > prevKg) trend = "up";
-          else if (curKg < prevKg) trend = "down";
-          else if (!isNaN(curReps) && !isNaN(prevReps)) {
-            if (curReps > prevReps) trend = "up";
-            else if (curReps < prevReps) trend = "down";
-          }
-        }
-        return { name: ex.name, curKg, curReps, prevKg, prevReps, trend };
-      }).filter(s => !isNaN(s.curKg));
-
-      setSummary(summaryItems);
-      setNewWeekCreated(nextWeek >= 15);
-
-      // Collect ONLY the cells that need writing — no full file rewrite
-      const cellUpdates = [];
-      sd.exercises.forEach(ex => {
-        const fEx = form[ex.name]; if (!fEx) return;
-        ex.sets.forEach((set, si) => {
-          const f = fEx[si]; if (!f) return;
-          const slot = set.slots[nextWeek]; if (!slot) return;
-          if (f.kg !== '' && f.kg != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colKg, value: parseFloat(f.kg) });
-          if (f.reps !== '' && f.reps != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colReps, value: parseFloat(f.reps) });
-          if (f.rir !== '' && f.rir != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colRir, value: f.rir });
-          if (f.notes !== '' && f.notes != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colNotes, value: f.notes });
-          // Substituted exercise name
-          if (substitutions[ex.name])
-            cellUpdates.push({ row: slot.rowIdx, col: 1, value: substitutions[ex.name] });
-          // Edited reps objective
-          const editedRo = editedRepsObj[ex.name]?.[si];
-          if (editedRo != null)
-            cellUpdates.push({ row: set.repsObjRowIdx, col: set.repsObjColIdx, value: editedRo });
-        });
-      });
-
-      // Write only those cells via Sheets API — format is preserved
       await onSave(wsName, cellUpdates);
-      setScreen("done");
+      setSaveError(null);
     } catch (err) {
       setSaveError(err.message);
     } finally {
@@ -397,10 +357,41 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     }
   };
 
+  // Finish: build summary and show done screen — data already saved cell by cell
+  const finish = () => {
+    const { sessions } = state;
+    const sd = sessions[selSession];
+    const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
+    const prevWeek = nextWeek - 1;
+    const summaryItems = sd.exercises.map(ex => {
+      const cur = ex.sets[0]?.slots[nextWeek];
+      const prev = prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null;
+      const curKg = parseFloat(form[ex.name]?.[0]?.kg || cur?.kg);
+      const prevKg = parseFloat(prev?.kg);
+      const curReps = parseFloat(form[ex.name]?.[0]?.reps || cur?.reps);
+      const prevReps = parseFloat(prev?.reps);
+      let trend = "neutral";
+      if (!isNaN(curKg) && !isNaN(prevKg)) {
+        if (curKg > prevKg) trend = "up";
+        else if (curKg < prevKg) trend = "down";
+        else if (!isNaN(curReps) && !isNaN(prevReps)) {
+          if (curReps > prevReps) trend = "up";
+          else if (curReps < prevReps) trend = "down";
+        }
+      }
+      return { name: ex.name, curKg, curReps, prevKg, prevReps, trend };
+    }).filter(s => !isNaN(s.curKg));
+    setSummary(summaryItems);
+    setNewWeekCreated(nextWeek >= 15);
+    setScreen("done");
+  };
+
+
+
   if (!state) return null;
 
   if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onSignOut={onSignOut} />;
-  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onSave={save} saving={saving} saveError={saveError} onBack={() => setScreen("home")} />;
+  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} wsName={state.wsName} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} onBack={() => setScreen("home")} />;
   if (screen === "progress")  return <Progress sessions={state.sessions} onBack={() => setScreen("home")} />;
   if (screen === "done")      return <Done fileName={fileName} newWeekCreated={newWeekCreated} summary={summary} onBack={() => setScreen("home")} />;
 }
@@ -602,10 +593,11 @@ function Home({ sessions, fileName, onSession, onProgress, onSignOut }) {
 }
 
 // ── LOG ────────────────────────────────────────────────────────────────────────
-function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onSave, saving, saveError, onBack }) {
+function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, onBack }) {
   const [subModal, setSubModal] = useState(null)
   const [numPad, setNumPad] = useState(null) // { exName, si, field, value, hint }
   const [timer, setTimer] = useState(null)
+  const [adjustingEx, setAdjustingEx] = useState(new Set()) // exercises unlocked for re-edit
   const timerRef = useRef(null)
 
   const startTimer = (secs) => {
@@ -657,7 +649,18 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
           value={numPad.value}
           label={numPad.label}
           hint={numPad.hint}
-          onValue={v => onSet(numPad.exName, numPad.si, numPad.field, v)}
+          onValue={v => {
+            onSet(numPad.exName, numPad.si, numPad.field, v)
+            // Auto-save this cell immediately
+            if (numPad.slot && v !== '') {
+              const fieldMap = { kg: 'colKg', reps: 'colReps', rir: 'colRir', notes: 'colNotes' }
+              const col = numPad.slot[fieldMap[numPad.field]]
+              if (col != null) {
+                const val = numPad.field === 'kg' || numPad.field === 'reps' ? parseFloat(v) : v
+                onAutoSave(wsName, [{ row: numPad.slot.rowIdx, col, value: val }])
+              }
+            }
+          }}
           onClose={() => setNumPad(null)}
         />
       )}
@@ -751,9 +754,15 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                 <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${D.border}` }}>
 
                   {/* Already done */}
-                  {alreadyDone && (
+                  {alreadyDone && !adjustingEx.has(ex.name) && (
                     <div style={{ background: D.doneDim, border: `1px solid ${D.done}20`, borderRadius: 12, padding: "14px 16px", marginTop: 14, marginBottom: 4 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: D.done, marginBottom: 8 }}>✓ Ya registrado esta semana</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: D.done }}>✓ Ya registrado esta semana</div>
+                        <button onClick={() => setAdjustingEx(p => new Set([...p, ex.name]))}
+                          style={{ background: D.card2, border: `1px solid ${D.border}`, borderRadius: 8, padding: "6px 12px", fontSize: 12, color: D.muted, cursor: "pointer", fontFamily: D.font }}>
+                          ✏ Ajustar
+                        </button>
+                      </div>
                       <div style={row({ gap: 8, flexWrap: "wrap" })}>
                         {ex.sets.map((set, si) => {
                           const slot = set.slots[nextWeek]
@@ -772,14 +781,14 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                   )}
 
                   {/* Stagnation */}
-                  {!alreadyDone && ex.isStagnant && (
+                  {!alreadyDone && !adjustingEx.has(ex.name) && ex.isStagnant && (
                     <div style={{ background: "#180F00", border: `1px solid ${D.orange}25`, borderRadius: 10, padding: "10px 14px", marginTop: 14, marginBottom: 4, fontSize: 12, color: D.orange }}>
                       ⚠️ Sin mejora en 3+ semanas · considera ajustar carga
                     </div>
                   )}
 
                   {/* Input section */}
-                  {!alreadyDone && ex.sets.map((set, si) => {
+                  {(!alreadyDone || adjustingEx.has(ex.name)) && ex.sets.map((set, si) => {
                     const f = fEx[si] || { kg: "", reps: "", rir: "", notes: "" }
                     const prev = prevWeek >= 0 ? set.slots[prevWeek] : null
                     const pKg = prev?.kg || null
@@ -807,19 +816,36 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
 
                         {/* Progression suggestion */}
                         {suggestion && (
-                          <div style={{ background: D.accentDim, border: `1px solid ${D.accent}20`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
-                            <div style={{ fontSize: 10, color: D.accent, letterSpacing: 1, marginBottom: 10, fontFamily: D.mono }}>💡 PROPUESTA</div>
+                          <div style={{ background: suggestion.type === "weight" ? D.accentDim : "#060B1A", border: `1px solid ${suggestion.type === "weight" ? D.accent : D.blue}20`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+                            <div style={{ fontSize: 10, color: suggestion.type === "weight" ? D.accent : D.blue, letterSpacing: 1, marginBottom: 10, fontFamily: D.mono }}>
+                              {suggestion.type === "weight" ? "💡 SUBE PESO" : "💡 SUBE REPS"}
+                            </div>
                             <div style={row({ gap: 8, alignItems: "flex-end" })}>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG sugerido</div>
-                                <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.kg}</div>
-                              </div>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps mín.</div>
-                                <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.reps}</div>
-                              </div>
+                              {suggestion.type === "weight" ? (
+                                <>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG nuevo</div>
+                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.kg}</div>
+                                  </div>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps mín.</div>
+                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.reps}</div>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG (igual)</div>
+                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.muted, fontFamily: D.mono }}>{suggestion.kg}</div>
+                                  </div>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps objetivo</div>
+                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.blue, fontFamily: D.mono }}>{suggestion.reps}</div>
+                                  </div>
+                                </>
+                              )}
                               <button onClick={() => { onSet(ex.name, si, "kg", String(suggestion.kg)); onSet(ex.name, si, "reps", String(suggestion.reps)) }}
-                                style={{ background: D.accent, color: D.bg, border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: D.font }}>
+                                style={{ background: suggestion.type === "weight" ? D.accent : D.blue, color: D.bg, border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: D.font }}>
                                 USAR
                               </button>
                             </div>
@@ -849,7 +875,8 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                               exName: ex.name, si, field,
                               value: f[field] || "",
                               label: `${ex.name.substring(0,20)} · ${set.label} · ${label}`,
-                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null
+                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null,
+                              slot: set.slots[nextWeek],
                             })}
                               style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${f[field] ? (field === "kg" ? D.accent+"40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
                               <div style={{ fontSize: 10, color: D.muted, marginBottom: 4, fontFamily: D.mono }}>{label}</div>
@@ -909,10 +936,17 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
               {saveError}
             </div>
           )}
-          <button onClick={onSave} disabled={saving}
-            style={{ width: "100%", background: saving ? D.muted2 : D.accent, color: saving ? D.muted : D.bg, fontFamily: D.font, fontWeight: 800, fontSize: 16, padding: "18px 0", borderRadius: 16, border: "none", cursor: saving ? "default" : "pointer", letterSpacing: 0.5 }}>
-            {saving ? "Guardando en Drive..." : "☁  Guardar en Drive"}
-          </button>
+          <div style={{ display: "flex", gap: 10 }}>
+            {saving && (
+              <div style={{ flex: 1, background: D.card, border: `1px solid ${D.border}`, borderRadius: 16, padding: "18px 0", textAlign: "center", fontSize: 13, color: D.muted }}>
+                ☁ Guardando...
+              </div>
+            )}
+            <button onClick={onFinish}
+              style={{ flex: 1, background: D.accent, color: D.bg, fontFamily: D.font, fontWeight: 800, fontSize: 16, padding: "18px 0", borderRadius: 16, border: "none", cursor: "pointer", letterSpacing: 0.5 }}>
+              ✓ Terminar sesión
+            </button>
+          </div>
         </div>
       </div>
     </div>
