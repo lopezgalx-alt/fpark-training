@@ -85,10 +85,22 @@ export async function findFile() {
 }
 
 export async function downloadFile() {
-  const resp = await apiRequest(
-    `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=xlsx`
-  )
-  return resp.arrayBuffer()
+  // Try up to 2 times — export can occasionally be slow
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await apiRequest(
+        `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=xlsx`
+      )
+      if (!resp.ok) {
+        const text = await resp.text()
+        throw new Error(`Error ${resp.status}: ${text.slice(0, 100)}`)
+      }
+      return resp.arrayBuffer()
+    } catch (e) {
+      if (attempt === 2) throw e
+      await new Promise(r => setTimeout(r, 2000)) // wait 2s before retry
+    }
+  }
 }
 
 export async function writeCells(sheetName, cellUpdates) {
@@ -128,4 +140,16 @@ function colToLetter(col) {
     col = Math.floor((col - 1) / 26)
   }
   return letter
+}
+
+// Read sheet data directly via Sheets API (faster than export)
+export async function readSheetData(sheetName) {
+  const resp = await apiRequest(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}?includeGridData=true&ranges='${encodeURIComponent(sheetName)}'`
+  )
+  if (!resp.ok) {
+    const err = await resp.json()
+    throw new Error(err.error?.message || 'Error al leer el archivo')
+  }
+  return resp.json()
 }

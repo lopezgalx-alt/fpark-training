@@ -22,7 +22,7 @@ export default function App() {
       const timeout = setTimeout(() => {
         setError('La conexión tardó demasiado. Comprueba tu conexión e inténtalo de nuevo.')
         setAuthState('error')
-      }, 20000)
+      }, 45000)
       loadFromDrive().finally(() => clearTimeout(timeout))
     } else {
       setAuthState('signed-out')
@@ -44,13 +44,14 @@ export default function App() {
       setAuthState('loading')
       const file = await withTimeout(findFile())
       if (!file) throw new Error('No se encontró el archivo en Drive.')
-      const buffer = await withTimeout(downloadFile(file.id), 20000)
+      const buffer = await withTimeout(downloadFile(file.id), 40000)
+      setError(null)
       setDriveFile(file)
       setXlsxBuffer(buffer)
       setAuthState('ready')
     } catch (e) {
       if (e.message === 'TOKEN_EXPIRED') setAuthState('signed-out')
-      else { setError(e.message); setAuthState('error') }
+      else { setError('Error: ' + e.message); setAuthState('error') }
     }
   }
 
