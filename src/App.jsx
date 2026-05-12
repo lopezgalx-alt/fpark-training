@@ -57,8 +57,7 @@ export default function App() {
 
   async function handleSave(sheetName, cellUpdates) {
     await withTimeout(writeCells(sheetName, cellUpdates))
-    const buffer = await withTimeout(downloadFile(driveFile.id), 20000)
-    setXlsxBuffer(buffer)
+    // No re-download needed — local state already updated by onSet
   }
 
   if (authState === 'loading')
