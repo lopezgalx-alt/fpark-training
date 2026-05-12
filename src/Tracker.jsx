@@ -114,26 +114,13 @@ function suggestProgression(prevKg, prevReps, repsObjStr) {
   const match = repsObjStr.match(/^(\d+)-(\d+)$/);
   if (!match) return null;
   const [, lo, hi] = match.map(Number);
+  if (reps <= hi) return null; // still in range or below, no weight increase needed
 
-  // Reps above range → suggest weight increase (+5%)
-  if (reps > hi) {
-    const raw = kg * 1.05;
-    const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
-    const newKg = Math.round(raw / inc) * inc;
-    return { type: "weight", kg: newKg, reps: lo, reason: `${prevReps} reps con ${kg}kg supera el rango (${repsObjStr}) → sube peso` };
-  }
-
-  // Reps within range but not at top → suggest more reps
-  // Increment: +1 for wide ranges (span ≥ 4), +2 for tight ranges (span ≤ 3) if far from top
-  if (reps >= lo && reps < hi) {
-    const span = hi - lo;
-    const gap = hi - reps;
-    const increment = gap >= 2 ? (span >= 4 ? 1 : 2) : 1;
-    const newReps = Math.min(reps + increment, hi);
-    return { type: "reps", kg, reps: newReps, reason: `${prevReps} reps en rango (${repsObjStr}) → intenta ${newReps} reps` };
-  }
-
-  return null;
+  // +5% rounded to nearest gym increment
+  const raw = kg * 1.05;
+  const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
+  const newKg = Math.round(raw / inc) * inc;
+  return { kg: newKg, reps: lo, reason: `${prevReps} reps con ${kg}kg supera el rango (${repsObjStr}) → +5%` };
 }
 
 // ── LOAD RECOMMENDATION based on previous week reps vs objective range ─────────
@@ -344,7 +331,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setScreen("log");
   };
 
-  // Auto-save a single cell immediately when numpad confirms
+  // Auto-save a single cell when numpad confirms
   const autoSaveCell = async (wsName, cellUpdates) => {
     setSaving(true);
     try {
@@ -357,9 +344,9 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     }
   };
 
-  // Finish: build summary and show done screen — data already saved cell by cell
+  // Finish session — data already saved, just build summary
   const finish = () => {
-    const { sessions } = state;
+    const { sessions, wsName } = state;
     const sd = sessions[selSession];
     const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
     const prevWeek = nextWeek - 1;
@@ -385,8 +372,6 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setNewWeekCreated(nextWeek >= 15);
     setScreen("done");
   };
-
-
 
   if (!state) return null;
 
@@ -597,7 +582,6 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
   const [subModal, setSubModal] = useState(null)
   const [numPad, setNumPad] = useState(null) // { exName, si, field, value, hint }
   const [timer, setTimer] = useState(null)
-  const [adjustingEx, setAdjustingEx] = useState(new Set()) // exercises unlocked for re-edit
   const timerRef = useRef(null)
 
   const startTimer = (secs) => {
@@ -649,18 +633,7 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
           value={numPad.value}
           label={numPad.label}
           hint={numPad.hint}
-          onValue={v => {
-            onSet(numPad.exName, numPad.si, numPad.field, v)
-            // Auto-save this cell immediately
-            if (numPad.slot && v !== '') {
-              const fieldMap = { kg: 'colKg', reps: 'colReps', rir: 'colRir', notes: 'colNotes' }
-              const col = numPad.slot[fieldMap[numPad.field]]
-              if (col != null) {
-                const val = numPad.field === 'kg' || numPad.field === 'reps' ? parseFloat(v) : v
-                onAutoSave(wsName, [{ row: numPad.slot.rowIdx, col, value: val }])
-              }
-            }
-          }}
+          onValue={v => onSet(numPad.exName, numPad.si, numPad.field, v)}
           onClose={() => setNumPad(null)}
         />
       )}
@@ -754,15 +727,9 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
                 <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${D.border}` }}>
 
                   {/* Already done */}
-                  {alreadyDone && !adjustingEx.has(ex.name) && (
+                  {alreadyDone && (
                     <div style={{ background: D.doneDim, border: `1px solid ${D.done}20`, borderRadius: 12, padding: "14px 16px", marginTop: 14, marginBottom: 4 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: D.done }}>✓ Ya registrado esta semana</div>
-                        <button onClick={() => setAdjustingEx(p => new Set([...p, ex.name]))}
-                          style={{ background: D.card2, border: `1px solid ${D.border}`, borderRadius: 8, padding: "6px 12px", fontSize: 12, color: D.muted, cursor: "pointer", fontFamily: D.font }}>
-                          ✏ Ajustar
-                        </button>
-                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: D.done, marginBottom: 8 }}>✓ Ya registrado esta semana</div>
                       <div style={row({ gap: 8, flexWrap: "wrap" })}>
                         {ex.sets.map((set, si) => {
                           const slot = set.slots[nextWeek]
@@ -781,14 +748,14 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
                   )}
 
                   {/* Stagnation */}
-                  {!alreadyDone && !adjustingEx.has(ex.name) && ex.isStagnant && (
+                  {!alreadyDone && ex.isStagnant && (
                     <div style={{ background: "#180F00", border: `1px solid ${D.orange}25`, borderRadius: 10, padding: "10px 14px", marginTop: 14, marginBottom: 4, fontSize: 12, color: D.orange }}>
                       ⚠️ Sin mejora en 3+ semanas · considera ajustar carga
                     </div>
                   )}
 
                   {/* Input section */}
-                  {(!alreadyDone || adjustingEx.has(ex.name)) && ex.sets.map((set, si) => {
+                  {!alreadyDone && ex.sets.map((set, si) => {
                     const f = fEx[si] || { kg: "", reps: "", rir: "", notes: "" }
                     const prev = prevWeek >= 0 ? set.slots[prevWeek] : null
                     const pKg = prev?.kg || null
@@ -816,36 +783,19 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
 
                         {/* Progression suggestion */}
                         {suggestion && (
-                          <div style={{ background: suggestion.type === "weight" ? D.accentDim : "#060B1A", border: `1px solid ${suggestion.type === "weight" ? D.accent : D.blue}20`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
-                            <div style={{ fontSize: 10, color: suggestion.type === "weight" ? D.accent : D.blue, letterSpacing: 1, marginBottom: 10, fontFamily: D.mono }}>
-                              {suggestion.type === "weight" ? "💡 SUBE PESO" : "💡 SUBE REPS"}
-                            </div>
+                          <div style={{ background: D.accentDim, border: `1px solid ${D.accent}20`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+                            <div style={{ fontSize: 10, color: D.accent, letterSpacing: 1, marginBottom: 10, fontFamily: D.mono }}>💡 PROPUESTA</div>
                             <div style={row({ gap: 8, alignItems: "flex-end" })}>
-                              {suggestion.type === "weight" ? (
-                                <>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG nuevo</div>
-                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.kg}</div>
-                                  </div>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps mín.</div>
-                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.reps}</div>
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG (igual)</div>
-                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.muted, fontFamily: D.mono }}>{suggestion.kg}</div>
-                                  </div>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps objetivo</div>
-                                    <div style={{ fontSize: 28, fontWeight: 800, color: D.blue, fontFamily: D.mono }}>{suggestion.reps}</div>
-                                  </div>
-                                </>
-                              )}
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG sugerido</div>
+                                <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.kg}</div>
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps mín.</div>
+                                <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.reps}</div>
+                              </div>
                               <button onClick={() => { onSet(ex.name, si, "kg", String(suggestion.kg)); onSet(ex.name, si, "reps", String(suggestion.reps)) }}
-                                style={{ background: suggestion.type === "weight" ? D.accent : D.blue, color: D.bg, border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: D.font }}>
+                                style={{ background: D.accent, color: D.bg, border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: D.font }}>
                                 USAR
                               </button>
                             </div>
@@ -875,8 +825,7 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
                               exName: ex.name, si, field,
                               value: f[field] || "",
                               label: `${ex.name.substring(0,20)} · ${set.label} · ${label}`,
-                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null,
-                              slot: set.slots[nextWeek],
+                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null
                             })}
                               style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${f[field] ? (field === "kg" ? D.accent+"40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
                               <div style={{ fontSize: 10, color: D.muted, marginBottom: 4, fontFamily: D.mono }}>{label}</div>
@@ -936,12 +885,8 @@ function Log({ session, sd, wsName, form, openEx, setOpenEx, substitutions, setS
               {saveError}
             </div>
           )}
-          <div style={{ display: "flex", gap: 10 }}>
-            {saving && (
-              <div style={{ flex: 1, background: D.card, border: `1px solid ${D.border}`, borderRadius: 16, padding: "18px 0", textAlign: "center", fontSize: 13, color: D.muted }}>
-                ☁ Guardando...
-              </div>
-            )}
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            {saving && <div style={{ fontSize: 12, color: D.muted }}>☁ Guardando...</div>}
             <button onClick={onFinish}
               style={{ flex: 1, background: D.accent, color: D.bg, fontFamily: D.font, fontWeight: 800, fontSize: 16, padding: "18px 0", borderRadius: 16, border: "none", cursor: "pointer", letterSpacing: 0.5 }}>
               ✓ Terminar sesión
