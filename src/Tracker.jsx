@@ -324,8 +324,20 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   const openSession = (name) => {
     const sd = state.sessions[name];
+    const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
     const sets = {};
-    sd.exercises.forEach(ex => { sets[ex.name] = ex.sets.map(() => ({ kg: "", reps: "", rir: "", notes: "" })); });
+    // Pre-fill with saved data so form reflects what's already in Sheets
+    sd.exercises.forEach(ex => {
+      sets[ex.name] = ex.sets.map(set => {
+        const slot = set.slots[nextWeek];
+        return {
+          kg: slot?.kg ?? "",
+          reps: slot?.reps ?? "",
+          rir: slot?.rir ?? "",
+          notes: slot?.notes ?? "",
+        };
+      });
+    });
     setSelSession(name); setForm(sets); setSubstitutions({}); setEditedRepsObj({});
     setOpenEx(sd.exercises[0]?.name || null);
     setScreen("log");
@@ -718,8 +730,8 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
           const filled = fEx.filter(s => s.kg || s.reps).length
           const displayName = substitutions[ex.name] || ex.name
           const currentSlot = ex.sets[0]?.slots[nextWeek]
-          // alreadyDone: data exists in Sheets (slot) AND not currently being edited (form empty)
-          // alreadyDone: ALL sets have data in Sheets AND form is empty
+          // alreadyDone: visual indicator only — all sets have saved data AND form is untouched
+          // Never blocks inputs — user can always fill in the form
           const allSetsHaveData = ex.sets.every(set => {
             const slot = set.slots[nextWeek]
             return slot && (
@@ -779,14 +791,14 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                   )}
 
                   {/* Stagnation */}
-                  {!alreadyDone && ex.isStagnant && (
+                  {ex.isStagnant && !formHasData && (
                     <div style={{ background: "#180F00", border: `1px solid ${D.orange}25`, borderRadius: 10, padding: "10px 14px", marginTop: 14, marginBottom: 4, fontSize: 12, color: D.orange }}>
                       ⚠️ Sin mejora en 3+ semanas · considera ajustar carga
                     </div>
                   )}
 
-                  {/* Input section */}
-                  {!alreadyDone && ex.sets.map((set, si) => {
+                  {/* Input section — always shown */}
+                  {ex.sets.map((set, si) => {
                     const f = fEx[si] || { kg: "", reps: "", rir: "", notes: "" }
                     const prev = prevWeek >= 0 ? set.slots[prevWeek] : null
                     const pKg = prev?.kg || null

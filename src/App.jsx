@@ -44,9 +44,7 @@ export default function App() {
   // Called by Tracker with cell updates — writes directly to Sheets API
   async function handleSave(sheetName, cellUpdates) {
     await writeCells(sheetName, cellUpdates)
-    // Reload from Drive so UI reflects saved data
-    const buffer = await downloadFile(driveFile.id)
-    setXlsxBuffer(buffer)
+    // No reload — form is pre-filled with saved data on re-entry
   }
 
   if (authState === 'checking' || authState === 'loading')
