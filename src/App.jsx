@@ -44,9 +44,7 @@ export default function App() {
   // Called by Tracker with cell updates — writes directly to Sheets API
   async function handleSave(sheetName, cellUpdates) {
     await writeCells(sheetName, cellUpdates)
-    // Reload so state reflects saved data when re-entering session
-    const buffer = await downloadFile(driveFile.id)
-    setXlsxBuffer(buffer)
+    // No reload needed — local state updated in Tracker.autoSaveCell
   }
 
   if (authState === 'checking' || authState === 'loading')

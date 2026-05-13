@@ -331,79 +331,35 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setScreen("log");
   };
 
-  const save = async () => {
+  // Called when numpad confirms a value.
+  // 1. Writes the single cell to Sheets
+  // 2. Updates the local state so re-entering the session shows saved data
+  const autoSaveCell = async (exName, setIdx, field, value, slot) => {
+    const { wsName } = state;
+    const fieldToCol = { kg: slot.colKg, reps: slot.colReps, rir: slot.colRir, notes: slot.colNotes };
+    const col = fieldToCol[field];
+    if (col == null) return;
+    const numericFields = ['kg', 'reps'];
+    const cellValue = numericFields.includes(field) ? parseFloat(value) : value;
+    if (isNaN(cellValue) && numericFields.includes(field)) return;
+
     setSaving(true); setSaveError(null);
     try {
-      const { wb, wsName, sessions } = state;
-      const sd = sessions[selSession];
-      const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
-      const prevWeek = nextWeek - 1;
-
-      // Build summary
-      const summaryItems = sd.exercises.map(ex => {
-        const cur = ex.sets[0]?.slots[nextWeek];
-        const prev = prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null;
-        const curKg = parseFloat(form[ex.name]?.[0]?.kg || cur?.kg);
-        const prevKg = parseFloat(prev?.kg);
-        const curReps = parseFloat(form[ex.name]?.[0]?.reps || cur?.reps);
-        const prevReps = parseFloat(prev?.reps);
-        let trend = "neutral";
-        if (!isNaN(curKg) && !isNaN(prevKg)) {
-          if (curKg > prevKg) trend = "up";
-          else if (curKg < prevKg) trend = "down";
-          else if (!isNaN(curReps) && !isNaN(prevReps)) {
-            if (curReps > prevReps) trend = "up";
-            else if (curReps < prevReps) trend = "down";
-          }
+      await onSave(wsName, [{ row: slot.rowIdx, col, value: cellValue }]);
+      // Update local state so slot reflects saved value without reloading file
+      setState(prev => {
+        const newState = { ...prev };
+        const sd = newState.sessions[selSession];
+        const ex = sd.exercises.find(e => e.name === exName);
+        if (ex) {
+          const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
+          ex.sets[setIdx].slots[nextWeek] = {
+            ...ex.sets[setIdx].slots[nextWeek],
+            [field]: value,
+          };
         }
-        return { name: ex.name, curKg, curReps, prevKg, prevReps, trend };
-      }).filter(s => !isNaN(s.curKg));
-
-      setSummary(summaryItems);
-      setNewWeekCreated(nextWeek >= 15);
-
-      // Collect ONLY the cells that need writing — no full file rewrite
-      const cellUpdates = [];
-      sd.exercises.forEach(ex => {
-        const fEx = form[ex.name]; if (!fEx) return;
-        ex.sets.forEach((set, si) => {
-          const f = fEx[si]; if (!f) return;
-          const slot = set.slots[nextWeek]; if (!slot) return;
-          if (f.kg !== '' && f.kg != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colKg, value: parseFloat(f.kg) });
-          if (f.reps !== '' && f.reps != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colReps, value: parseFloat(f.reps) });
-          if (f.rir !== '' && f.rir != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colRir, value: f.rir });
-          if (f.notes !== '' && f.notes != null)
-            cellUpdates.push({ row: slot.rowIdx, col: slot.colNotes, value: f.notes });
-          // Substituted exercise name
-          if (substitutions[ex.name])
-            cellUpdates.push({ row: slot.rowIdx, col: 1, value: substitutions[ex.name] });
-          // Edited reps objective
-          const editedRo = editedRepsObj[ex.name]?.[si];
-          if (editedRo != null)
-            cellUpdates.push({ row: set.repsObjRowIdx, col: set.repsObjColIdx, value: editedRo });
-        });
+        return newState;
       });
-
-      // Write only those cells via Sheets API — format is preserved
-      if (cellUpdates.length === 0) {
-        setSaveError("No hay datos nuevos para guardar. Rellena al menos un campo.");
-        setSaving(false);
-        return;
-      }
-      await onSave(wsName, cellUpdates);
-
-      // Only show done screen if ALL exercises have at least one set with data in form
-      const allDone = sd.exercises.every(ex => {
-        const fEx = form[ex.name] || [];
-        return fEx.some(s => s.kg || s.reps);
-      });
-      if (allDone) {
-        setScreen("done");
-      }
-      // If partial, stay on log — data is saved in Sheets
     } catch (err) {
       setSaveError("Error al guardar: " + err.message);
     } finally {
@@ -411,10 +367,40 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     }
   };
 
+  // Called when user taps "Terminar sesión".
+  // Data is already saved cell by cell — just build summary and go to Done.
+  const finish = () => {
+    const { sessions } = state;
+    const sd = sessions[selSession];
+    const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
+    const prevWeek = nextWeek - 1;
+    const summaryItems = sd.exercises.map(ex => {
+      const cur = ex.sets[0]?.slots[nextWeek];
+      const prev = prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null;
+      const curKg = parseFloat(cur?.kg);
+      const prevKg = parseFloat(prev?.kg);
+      const curReps = parseFloat(cur?.reps);
+      const prevReps = parseFloat(prev?.reps);
+      let trend = "neutral";
+      if (!isNaN(curKg) && !isNaN(prevKg)) {
+        if (curKg > prevKg) trend = "up";
+        else if (curKg < prevKg) trend = "down";
+        else if (!isNaN(curReps) && !isNaN(prevReps)) {
+          if (curReps > prevReps) trend = "up";
+          else if (curReps < prevReps) trend = "down";
+        }
+      }
+      return { name: ex.name, curKg, curReps, prevKg, prevReps, trend };
+    }).filter(s => !isNaN(s.curKg));
+    setSummary(summaryItems);
+    setNewWeekCreated(nextWeek >= 15);
+    setScreen("done");
+  };
+
   if (!state) return null;
 
   if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onSignOut={onSignOut} />;
-  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onSave={save} saving={saving} saveError={saveError} onBack={() => setScreen("home")} />;
+  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} onBack={() => setScreen("home")} />;
   if (screen === "progress")  return <Progress sessions={state.sessions} onBack={() => setScreen("home")} />;
   if (screen === "done")      return <Done fileName={fileName} newWeekCreated={newWeekCreated} summary={summary} onBack={() => setScreen("home")} />;
 }
@@ -616,7 +602,7 @@ function Home({ sessions, fileName, onSession, onProgress, onSignOut }) {
 }
 
 // ── LOG ────────────────────────────────────────────────────────────────────────
-function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onSave, saving, saveError, onBack }) {
+function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, onBack }) {
   const [subModal, setSubModal] = useState(null)
   const [numPad, setNumPad] = useState(null) // { exName, si, field, value, hint }
   const [timer, setTimer] = useState(null)
@@ -671,7 +657,12 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
           value={numPad.value}
           label={numPad.label}
           hint={numPad.hint}
-          onValue={v => onSet(numPad.exName, numPad.si, numPad.field, v)}
+          onValue={v => {
+            onSet(numPad.exName, numPad.si, numPad.field, v);
+            if (v !== '' && numPad.slot) {
+              onAutoSave(numPad.exName, numPad.si, numPad.field, v, numPad.slot);
+            }
+          }}
           onClose={() => setNumPad(null)}
         />
       )}
@@ -870,7 +861,8 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                               exName: ex.name, si, field,
                               value: f[field] || "",
                               label: `${ex.name.substring(0,20)} · ${set.label} · ${label}`,
-                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null
+                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null,
+                              slot: set.slots[nextWeek],
                             })}
                               style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${f[field] ? (field === "kg" ? D.accent+"40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
                               <div style={{ fontSize: 10, color: D.muted, marginBottom: 4, fontFamily: D.mono }}>{label}</div>
@@ -930,10 +922,17 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
               {saveError}
             </div>
           )}
-          <button onClick={onSave} disabled={saving}
-            style={{ width: "100%", background: saving ? D.muted2 : D.accent, color: saving ? D.muted : D.bg, fontFamily: D.font, fontWeight: 800, fontSize: 16, padding: "18px 0", borderRadius: 16, border: "none", cursor: saving ? "default" : "pointer", letterSpacing: 0.5 }}>
-            {saving ? "Guardando en Drive..." : "☁  Guardar en Drive"}
-          </button>
+          <div style={{ position: "relative" }}>
+            {saving && (
+              <div style={{ textAlign: "center", fontSize: 11, color: D.muted, marginBottom: 8 }}>
+                ☁ Guardando...
+              </div>
+            )}
+            <button onClick={onFinish}
+              style={{ width: "100%", background: D.accent, color: D.bg, fontFamily: D.font, fontWeight: 800, fontSize: 16, padding: "18px 0", borderRadius: 16, border: "none", cursor: "pointer", letterSpacing: 0.5 }}>
+              ✓ Terminar sesión
+            </button>
+          </div>
         </div>
       </div>
     </div>
