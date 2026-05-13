@@ -324,8 +324,20 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   const openSession = (name) => {
     const sd = state.sessions[name];
+    const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
     const sets = {};
-    sd.exercises.forEach(ex => { sets[ex.name] = ex.sets.map(() => ({ kg: "", reps: "", rir: "", notes: "" })); });
+    // Pre-fill from local state (already updated by autoSaveCell without reload)
+    sd.exercises.forEach(ex => {
+      sets[ex.name] = ex.sets.map(set => {
+        const slot = set.slots[nextWeek];
+        return {
+          kg: slot?.kg ?? "",
+          reps: slot?.reps ?? "",
+          rir: slot?.rir ?? "",
+          notes: slot?.notes ?? "",
+        };
+      });
+    });
     setSelSession(name); setForm(sets); setSubstitutions({}); setEditedRepsObj({});
     setOpenEx(sd.exercises[0]?.name || null);
     setScreen("log");
