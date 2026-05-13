@@ -718,10 +718,17 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
           const filled = fEx.filter(s => s.kg || s.reps).length
           const displayName = substitutions[ex.name] || ex.name
           const currentSlot = ex.sets[0]?.slots[nextWeek]
-          const alreadyDone = currentSlot && (
-            (currentSlot.reps !== "" && !isNaN(parseFloat(currentSlot.reps))) ||
-            (currentSlot.kg !== "" && !isNaN(parseFloat(currentSlot.kg)) && parseFloat(currentSlot.kg) > 0)
-          )
+          // alreadyDone: data exists in Sheets (slot) AND not currently being edited (form empty)
+          // alreadyDone: ALL sets have data in Sheets AND form is empty
+          const allSetsHaveData = ex.sets.every(set => {
+            const slot = set.slots[nextWeek]
+            return slot && (
+              (slot.reps !== "" && !isNaN(parseFloat(slot.reps))) ||
+              (slot.kg !== "" && !isNaN(parseFloat(slot.kg)) && parseFloat(slot.kg) > 0)
+            )
+          })
+          const formHasData = fEx.some(s => s.kg || s.reps)
+          const alreadyDone = allSetsHaveData && !formHasData
 
           return (
             <div key={ex.name} style={{ ...card({ marginBottom: 10, overflow: "hidden", border: `1px solid ${alreadyDone ? D.done+"30" : filled > 0 ? D.accent+"25" : D.border}` }) }}>
