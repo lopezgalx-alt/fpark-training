@@ -400,10 +400,26 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       });
 
       // Write only those cells via Sheets API — format is preserved
+      if (cellUpdates.length === 0) {
+        setSaveError("No hay datos nuevos para guardar. Rellena al menos un campo.");
+        setSaving(false);
+        return;
+      }
       await onSave(wsName, cellUpdates);
-      setScreen("done");
+
+      // Only show done screen if ALL exercises have at least one set with data
+      const allDone = sd.exercises.every(ex => {
+        const fEx = form[ex.name] || [];
+        return fEx.some(s => s.kg || s.reps);
+      });
+      if (allDone) {
+        setScreen("done");
+      } else {
+        // Partial save — stay on log screen with success feedback
+        setSaveError(null);
+      }
     } catch (err) {
-      setSaveError(err.message);
+      setSaveError("Error al guardar: " + err.message);
     } finally {
       setSaving(false);
     }
