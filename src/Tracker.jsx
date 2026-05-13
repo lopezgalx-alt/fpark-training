@@ -324,20 +324,8 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   const openSession = (name) => {
     const sd = state.sessions[name];
-    const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
     const sets = {};
-    // Pre-fill with saved data so form reflects what's already in Sheets
-    sd.exercises.forEach(ex => {
-      sets[ex.name] = ex.sets.map(set => {
-        const slot = set.slots[nextWeek];
-        return {
-          kg: slot?.kg ?? "",
-          reps: slot?.reps ?? "",
-          rir: slot?.rir ?? "",
-          notes: slot?.notes ?? "",
-        };
-      });
-    });
+    sd.exercises.forEach(ex => { sets[ex.name] = ex.sets.map(() => ({ kg: "", reps: "", rir: "", notes: "" })); });
     setSelSession(name); setForm(sets); setSubstitutions({}); setEditedRepsObj({});
     setOpenEx(sd.exercises[0]?.name || null);
     setScreen("log");
@@ -407,17 +395,15 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       }
       await onSave(wsName, cellUpdates);
 
-      // Only show done screen if ALL exercises have at least one set with data
+      // Only show done screen if ALL exercises have at least one set with data in form
       const allDone = sd.exercises.every(ex => {
         const fEx = form[ex.name] || [];
         return fEx.some(s => s.kg || s.reps);
       });
       if (allDone) {
         setScreen("done");
-      } else {
-        // Partial save — stay on log screen with success feedback
-        setSaveError(null);
       }
+      // If partial, stay on log — data is saved in Sheets
     } catch (err) {
       setSaveError("Error al guardar: " + err.message);
     } finally {
