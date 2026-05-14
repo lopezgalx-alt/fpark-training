@@ -114,13 +114,25 @@ function suggestProgression(prevKg, prevReps, repsObjStr) {
   const match = repsObjStr.match(/^(\d+)-(\d+)$/);
   if (!match) return null;
   const [, lo, hi] = match.map(Number);
-  if (reps <= hi) return null; // still in range or below, no weight increase needed
 
-  // +5% rounded to nearest gym increment
-  const raw = kg * 1.05;
-  const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
-  const newKg = Math.round(raw / inc) * inc;
-  return { kg: newKg, reps: lo, reason: `${prevReps} reps con ${kg}kg supera el rango (${repsObjStr}) → +5%` };
+  // Reps above range → suggest weight increase (+5%)
+  if (reps > hi) {
+    const raw = kg * 1.05;
+    const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
+    const newKg = Math.round(raw / inc) * inc;
+    return { type: "weight", kg: newKg, reps: lo, reason: `${prevReps} reps supera el rango (${repsObjStr}) → sube peso` };
+  }
+
+  // Reps within range but not at top → suggest more reps
+  if (reps >= lo && reps < hi) {
+    const span = hi - lo;
+    const gap = hi - reps;
+    const increment = gap >= 2 ? (span >= 4 ? 1 : 2) : 1;
+    const newReps = Math.min(reps + increment, hi);
+    return { type: "reps", kg, reps: newReps, reason: `${prevReps} reps en rango (${repsObjStr}) → intenta ${newReps} reps` };
+  }
+
+  return null;
 }
 
 // ── LOAD RECOMMENDATION based on previous week reps vs objective range ─────────
@@ -387,8 +399,11 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
     const prevWeek = nextWeek - 1;
     const summaryItems = sd.exercises.map(ex => {
-      const cur = ex.sets[0]?.slots[nextWeek];
-      const prev = prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null;
+      // Use first set that has data (not necessarily set[0])
+      const filledCur = ex.sets.map(s => s.slots[nextWeek]).find(s => s?.kg || s?.reps) || ex.sets[0]?.slots[nextWeek];
+      const filledPrev = ex.sets.map(s => prevWeek >= 0 ? s.slots[prevWeek] : null).find(s => s?.kg || s?.reps) || (prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null);
+      const cur = filledCur;
+      const prev = filledPrev;
       const curKg = parseFloat(cur?.kg);
       const prevKg = parseFloat(prev?.kg);
       const curReps = parseFloat(cur?.reps);
@@ -403,7 +418,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         }
       }
       return { name: ex.name, curKg, curReps, prevKg, prevReps, trend };
-    }).filter(s => !isNaN(s.curKg));
+    }).filter(s => !isNaN(s.curKg) || !isNaN(s.curReps));
     setSummary(summaryItems);
     setNewWeekCreated(nextWeek >= 15);
     setScreen("done");
@@ -829,35 +844,38 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                           </div>
                         )}
 
-                        {/* Progression suggestion */}
+                        {/* Progression suggestion — visually dominant */}
                         {suggestion && (
-                          <div style={{ background: D.accentDim, border: `1px solid ${D.accent}20`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
-                            <div style={{ fontSize: 10, color: D.accent, letterSpacing: 1, marginBottom: 10, fontFamily: D.mono }}>💡 PROPUESTA</div>
-                            <div style={row({ gap: 8, alignItems: "flex-end" })}>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>KG sugerido</div>
-                                <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.kg}</div>
+                          <div style={{ background: suggestion.type === "weight" ? "#0D1A00" : "#00101A", border: `2px solid ${suggestion.type === "weight" ? D.accent : D.blue}40`, borderRadius: 14, padding: "16px", marginBottom: 14 }}>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: suggestion.type === "weight" ? D.accent : D.blue, letterSpacing: 2, marginBottom: 12, fontFamily: D.mono }}>
+                              {suggestion.type === "weight" ? "⬆ SUBE PESO" : "⬆ SUBE REPS"}
+                            </div>
+                            <div style={row({ gap: 10, alignItems: "center", marginBottom: 10 })}>
+                              <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+                                <div style={{ fontSize: 9, color: suggestion.type === "weight" ? D.accent : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>KG</div>
+                                <div style={{ fontSize: 32, fontWeight: 900, color: suggestion.type === "weight" ? D.accent : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.kg}</div>
                               </div>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 10, color: D.muted, marginBottom: 4 }}>Reps mín.</div>
-                                <div style={{ fontSize: 28, fontWeight: 800, color: D.accent, fontFamily: D.mono }}>{suggestion.reps}</div>
+                              <div style={{ fontSize: 18, color: D.muted }}>×</div>
+                              <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+                                <div style={{ fontSize: 9, color: suggestion.type === "reps" ? D.blue : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>REPS</div>
+                                <div style={{ fontSize: 32, fontWeight: 900, color: suggestion.type === "reps" ? D.blue : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.reps}</div>
                               </div>
                               <button onClick={() => { onSet(ex.name, si, "kg", String(suggestion.kg)); onSet(ex.name, si, "reps", String(suggestion.reps)) }}
-                                style={{ background: D.accent, color: D.bg, border: "none", borderRadius: 10, padding: "12px 16px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: D.font }}>
+                                style={{ background: suggestion.type === "weight" ? D.accent : D.blue, color: D.bg, border: "none", borderRadius: 12, padding: "14px 18px", fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: D.font, letterSpacing: 0.5 }}>
                                 USAR
                               </button>
                             </div>
-                            <div style={{ fontSize: 10, color: D.muted, marginTop: 6 }}>{suggestion.reason}</div>
+                            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>{suggestion.reason}</div>
                           </div>
                         )}
 
-                        {/* Prev week reference */}
+                        {/* Prev week reference — smaller, below suggestion */}
                         {prevWeek >= 0 && (pKg || pReps) && (
-                          <div style={{ background: D.card2, borderRadius: 10, padding: "10px 14px", marginBottom: 8 }}>
-                            <div style={{ fontSize: 10, color: D.muted, marginBottom: 6, fontFamily: D.mono }}>SEMANA ANTERIOR · {ex.weekLabels?.[prevWeek]}</div>
-                            <div style={row({ gap: 16 })}>
-                              {pKg && <div><span style={{ fontSize: 22, fontWeight: 800, color: D.muted }}>{pKg}</span><span style={{ fontSize: 11, color: D.muted }}> kg</span></div>}
-                              {pReps && <div><span style={{ fontSize: 22, fontWeight: 800, color: D.muted }}>{pReps}</span><span style={{ fontSize: 11, color: D.muted }}> reps</span></div>}
+                          <div style={{ background: D.card2, borderRadius: 10, padding: "8px 14px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>SEMANA ANT. · {ex.weekLabels?.[prevWeek]}</div>
+                            <div style={row({ gap: 14 })}>
+                              {pKg && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pKg}</span><span style={{ fontSize: 10, color: D.muted }}> kg</span></div>}
+                              {pReps && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pReps}</span><span style={{ fontSize: 10, color: D.muted }}> r</span></div>}
                             </div>
                           </div>
                         )}
