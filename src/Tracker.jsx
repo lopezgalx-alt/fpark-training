@@ -115,8 +115,8 @@ function suggestProgression(prevKg, prevReps, repsObjStr) {
   if (!match) return null;
   const [, lo, hi] = match.map(Number);
 
-  // Reps above range → suggest weight increase (+5%)
-  if (reps > hi) {
+  // Reps at or above range top → suggest weight increase (+5%)
+  if (reps >= hi) {
     const raw = kg * 1.05;
     const inc = kg >= 100 ? 5 : kg >= 40 ? 2.5 : 1.25;
     const newKg = Math.round(raw / inc) * inc;
@@ -320,6 +320,8 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
   const [summary, setSummary] = useState(null);
 
   // Parse Excel when buffer changes (loaded from Drive)
+  // Only reset to home on first load — background reloads preserve current screen
+  const isFirstLoad = useRef(true);
   useEffect(() => {
     if (!xlsxBuffer) return;
     try {
@@ -327,8 +329,11 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const wsName = wb.SheetNames.find(n => n.toUpperCase().includes("FPARK")) || wb.SheetNames.at(-1);
       const sessions = parseSheet(wb.Sheets[wsName]);
-      setState({ wb, wsName, sessions });
-      setScreen("home");
+      setState(prev => ({ wb, wsName, sessions }));
+      if (isFirstLoad.current) {
+        setScreen("home");
+        isFirstLoad.current = false;
+      }
     } catch (err) {
       alert("Error leyendo Excel: " + err.message);
     }
