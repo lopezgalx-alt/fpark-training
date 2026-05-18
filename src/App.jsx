@@ -45,7 +45,7 @@ export default function App() {
   async function handleSave(sheetName, cellUpdates) {
     await writeCells(sheetName, cellUpdates)
     // Reload in background so state is fresh when re-entering session
-    downloadFile(driveFile.id).then(buffer => setXlsxBuffer(buffer)).catch(() => {})
+    downloadFile(driveFile.id).then(buffer => setXlsxBuffer(buffer)).catch(() => { /* silent — background reload, token may have expired */ })
   }
 
   if (authState === 'checking' || authState === 'loading')

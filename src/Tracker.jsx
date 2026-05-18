@@ -326,6 +326,13 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     if (!xlsxBuffer) return;
     try {
       const buf = new Uint8Array(xlsxBuffer);
+      // Check magic bytes — xlsx files start with PK (0x50 0x4B)
+      // If it starts with < it's an HTML error page from Google — ignore silently
+      if (buf[0] === 0x3C) {
+        // HTML response (token expired or rate limit) — skip background reload
+        if (!isFirstLoad.current) return;
+        throw new Error("Sesión expirada. Por favor reconecta con Google Drive.");
+      }
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const wsName = wb.SheetNames.find(n => n.toUpperCase().includes("FPARK")) || wb.SheetNames.at(-1);
       const sessions = parseSheet(wb.Sheets[wsName]);
@@ -335,6 +342,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         isFirstLoad.current = false;
       }
     } catch (err) {
+      if (!isFirstLoad.current) return; // Ignore errors on background reloads
       alert("Error leyendo Excel: " + err.message);
     }
   }, [xlsxBuffer]);
