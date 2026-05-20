@@ -336,10 +336,20 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const wsName = wb.SheetNames.find(n => n.toUpperCase().includes("FPARK")) || wb.SheetNames.at(-1);
       const sessions = parseSheet(wb.Sheets[wsName]);
-      setState(prev => ({ wb, wsName, sessions }));
+      // Never overwrite state while mid-session (screen === "log") — would invalidate
+      // all numPad.slot references and cause saves to go to wrong cells.
+      // On first load screen is null so we always apply it.
       if (isFirstLoad.current) {
+        setState(prev => ({ wb, wsName, sessions }));
         setScreen("home");
         isFirstLoad.current = false;
+      } else {
+        // On subsequent loads (shouldn't happen now background reload is removed),
+        // only update if not in an active session
+        setState(prev => {
+          if (prev.__screen === "log") return prev; // guard — never happens now
+          return { wb, wsName, sessions };
+        });
       }
     } catch (err) {
       if (!isFirstLoad.current) return; // Ignore errors on background reloads
@@ -891,7 +901,17 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                                 <div style={{ fontSize: 9, color: suggestion.type === "reps" ? D.blue : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>REPS</div>
                                 <div style={{ fontSize: 32, fontWeight: 900, color: suggestion.type === "reps" ? D.blue : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.reps}</div>
                               </div>
-                              <button onClick={() => { onSet(ex.name, si, "kg", String(suggestion.kg)); onSet(ex.name, si, "reps", String(suggestion.reps)) }}
+                              <button onClick={() => {
+                                const kgStr = String(suggestion.kg);
+                                const repsStr = String(suggestion.reps);
+                                onSet(ex.name, si, "kg", kgStr);
+                                onSet(ex.name, si, "reps", repsStr);
+                                const slot = set.slots[nextWeek];
+                                if (slot) {
+                                  onAutoSave(ex.name, si, "kg", kgStr, slot);
+                                  onAutoSave(ex.name, si, "reps", repsStr, slot);
+                                }
+                              }}
                                 style={{ background: suggestion.type === "weight" ? D.accent : D.blue, color: D.bg, border: "none", borderRadius: 12, padding: "14px 18px", fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: D.font, letterSpacing: 0.5 }}>
                                 USAR
                               </button>
@@ -937,6 +957,7 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
 
                         {/* Notes */}
                         <input type="text" value={f.notes || ""} onChange={e => onSet(ex.name, si, "notes", e.target.value)}
+                          onBlur={e => { const v = e.target.value; if (v) { const slot = set.slots[nextWeek]; if (slot) onAutoSave(ex.name, si, "notes", v, slot); } }}
                           placeholder="Nota..." style={{ ...inp, fontSize: 13, padding: "10px 14px" }} />
 
                         {/* Timer — shown after reps filled */}

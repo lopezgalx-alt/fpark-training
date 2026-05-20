@@ -42,10 +42,12 @@ export default function App() {
   }
 
   // Called by Tracker with cell updates — writes directly to Sheets API
+  // NO background reload here: local state is updated immediately in autoSaveCell.
+  // A background reload while mid-session causes a race condition: the new parse
+  // replaces state.sessions while numPad.slot still holds stale rowIdx/col refs,
+  // causing subsequent saves to write to wrong cells or be silently lost.
   async function handleSave(sheetName, cellUpdates) {
     await writeCells(sheetName, cellUpdates)
-    // Reload in background so state is fresh when re-entering session
-    downloadFile(driveFile.id).then(buffer => setXlsxBuffer(buffer)).catch(() => { /* silent — background reload, token may have expired */ })
   }
 
   if (authState === 'checking' || authState === 'loading')
