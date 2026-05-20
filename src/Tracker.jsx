@@ -368,9 +368,13 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setScreen("log");
   };
 
+  // Track cells that failed to save — key: "exName-setIdx-field"
+  const [failedCells, setFailedCells] = useState({});
+
   // Called when numpad confirms a value.
-  // 1. Writes the single cell to Sheets
-  // 2. Updates the local state so re-entering the session shows saved data
+  // 1. Writes the single cell to Sheets (with 2 retries)
+  // 2. Updates the local state immediately
+  // 3. Marks cell as failed if all retries fail
   const autoSaveCell = async (exName, setIdx, field, value, slot) => {
     const { wsName } = state;
     const fieldToCol = { kg: slot.colKg, reps: slot.colReps, rir: slot.colRir, notes: slot.colNotes };
@@ -380,28 +384,42 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     const cellValue = numericFields.includes(field) ? parseFloat(value) : value;
     if (isNaN(cellValue) && numericFields.includes(field)) return;
 
-    setSaving(true); setSaveError(null);
-    try {
-      await onSave(wsName, [{ row: slot.rowIdx, col, value: cellValue }]);
-      // Update local state so slot reflects saved value without reloading file
-      setState(prev => {
-        const newState = { ...prev };
-        const sd = newState.sessions[selSession];
-        const ex = sd.exercises.find(e => e.name === exName);
-        if (ex) {
-          const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
-          ex.sets[setIdx].slots[nextWeek] = {
-            ...ex.sets[setIdx].slots[nextWeek],
-            [field]: value,
-          };
-        }
-        return newState;
-      });
-    } catch (err) {
-      setSaveError("Error al guardar: " + err.message);
-    } finally {
-      setSaving(false);
+    const cellKey = `${exName}-${setIdx}-${field}`;
+
+    // Update local state immediately so UI reflects the value
+    setState(prev => {
+      const newState = { ...prev };
+      const sd = newState.sessions[selSession];
+      const ex = sd.exercises.find(e => e.name === exName);
+      if (ex) {
+        const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
+        ex.sets[setIdx].slots[nextWeek] = {
+          ...ex.sets[setIdx].slots[nextWeek],
+          [field]: value,
+        };
+      }
+      return newState;
+    });
+
+    // Try to save to Sheets — up to 2 retries
+    setSaving(true);
+    let saved = false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await onSave(wsName, [{ row: slot.rowIdx, col, value: cellValue }]);
+        saved = true;
+        setFailedCells(prev => { const n = { ...prev }; delete n[cellKey]; return n; });
+        setSaveError(null);
+        break;
+      } catch (err) {
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+      }
     }
+    if (!saved) {
+      setFailedCells(prev => ({ ...prev, [cellKey]: true }));
+      setSaveError("⚠ Fallo al guardar — revisa tu conexión");
+    }
+    setSaving(false);
   };
 
   // Called when user taps "Terminar sesión".
@@ -440,7 +458,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
   if (!state) return null;
 
   if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onSignOut={onSignOut} />;
-  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} onBack={() => setScreen("home")} />;
+  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} onBack={() => setScreen("home")} />;
   if (screen === "progress")  return <Progress sessions={state.sessions} onBack={() => setScreen("home")} />;
   if (screen === "done")      return <Done fileName={fileName} newWeekCreated={newWeekCreated} summary={summary} onBack={() => setScreen("home")} />;
 }
@@ -642,7 +660,7 @@ function Home({ sessions, fileName, onSession, onProgress, onSignOut }) {
 }
 
 // ── LOG ────────────────────────────────────────────────────────────────────────
-function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, onBack }) {
+function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, failedCells, onBack }) {
   const [subModal, setSubModal] = useState(null)
   const [numPad, setNumPad] = useState(null) // { exName, si, field, value, hint }
   const [timer, setTimer] = useState(null)
@@ -907,12 +925,12 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                               hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null,
                               slot: set.slots[nextWeek],
                             })}
-                              style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${f[field] ? (field === "kg" ? D.accent+"40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
-                              <div style={{ fontSize: 10, color: D.muted, marginBottom: 4, fontFamily: D.mono }}>{label}</div>
-                              <div style={{ fontSize: f[field] ? 28 : 20, fontWeight: 800, color: f[field] ? (field === "kg" ? D.accent : D.text) : D.muted, fontFamily: D.mono }}>
+                              style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${failedCells[`${ex.name}-${si}-${field}`] ? D.red : f[field] ? (field === "kg" ? D.accent+"40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
+                              <div style={{ fontSize: 10, color: failedCells[`${ex.name}-${si}-${field}`] ? D.red : D.muted, marginBottom: 4, fontFamily: D.mono }}>{failedCells[`${ex.name}-${si}-${field}`] ? "⚠ "+label : label}</div>
+                              <div style={{ fontSize: f[field] ? 28 : 20, fontWeight: 800, color: failedCells[`${ex.name}-${si}-${field}`] ? D.red : f[field] ? (field === "kg" ? D.accent : D.text) : D.muted, fontFamily: D.mono }}>
                                 {f[field] || "—"}
                               </div>
-                              {f[field] && <div style={{ fontSize: 10, color: D.muted, marginTop: 2 }}>{unit}</div>}
+                              {f[field] && <div style={{ fontSize: 10, color: failedCells[`${ex.name}-${si}-${field}`] ? D.red : D.muted, marginTop: 2 }}>{failedCells[`${ex.name}-${si}-${field}`] ? "no guardado" : unit}</div>}
                             </button>
                           ))}
                         </div>
