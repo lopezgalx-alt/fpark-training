@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { signIn, signOut, isSignedIn, findFile, downloadFile, writeCells } from './drive.js'
+import { signIn, signOut, isSignedIn, findFile, downloadFile, writeCells, warmToken } from './drive.js'
 import Tracker from './Tracker.jsx'
 
 const C = { accent: '#C8F135', dark: '#0D0D0D', card: '#161616', muted: '#555', text: '#E8E8E8', red: '#FF6B6B' }
@@ -40,6 +40,23 @@ export default function App() {
       else { setError(e.message); setAuthState('error') }
     }
   }
+
+  // iOS suspends the PWA; on resume the 1h token is often stale. Refresh it
+  // silently on focus so the first tap after reopening doesn't hit a 401.
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState === 'visible' && isSignedIn()) warmToken()
+    }
+    window.addEventListener('focus', onWake)
+    document.addEventListener('visibilitychange', onWake)
+    // Also refresh periodically while the app stays open through a long session
+    const t = setInterval(() => { if (isSignedIn()) warmToken() }, 20 * 60 * 1000)
+    return () => {
+      window.removeEventListener('focus', onWake)
+      document.removeEventListener('visibilitychange', onWake)
+      clearInterval(t)
+    }
+  }, [])
 
   // Called by Tracker with cell updates — writes directly to Sheets API
   // NO background reload here: local state is updated immediately in autoSaveCell.

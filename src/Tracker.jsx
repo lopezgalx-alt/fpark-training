@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { loadPending, enqueue, removeSynced, pendingCount } from "./store";
+import Medidas, { parseMedidas, MED_SHEET, MED_NOTES_COL, niceDomain } from "./Medidas";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const C = { accent: "#C8F135", dark: "#0D0D0D", card: "#161616", muted: "#555", muted2: "#2A2A2A", text: "#E8E8E8", red: "#FF6B6B", orange: "#F59E0B", blue: "#60A5FA", green: "#4ADE80" };
@@ -107,6 +109,17 @@ function findCurrentWeekIdx(weekData) {
 // ── PROGRESSION SUGGESTION ────────────────────────────────────────────────────
 // If last week reps > hi of range → suggest +5% kg, rounded to gym increment
 // Returns { kg, reps, reason } or null
+// Find the most recent week at or before `from` that has real data for this set.
+// Weeks can be empty because training wasn't recorded (holidays, gaps), so
+// looking only at from-1 loses the reference entirely. Returns null if none.
+function findLastRecorded(slots, from) {
+  for (let wi = from; wi >= 0; wi--) {
+    const s = slots[wi];
+    if (s && (s.kg || s.reps)) return { slot: s, weekIdx: wi };
+  }
+  return null;
+}
+
 function suggestProgression(prevKg, prevReps, repsObjStr) {
   const kg = parseFloat(prevKg);
   const reps = parseFloat(prevReps);
@@ -336,11 +349,38 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const wsName = wb.SheetNames.find(n => n.toUpperCase().includes("FPARK")) || wb.SheetNames.at(-1);
       const sessions = parseSheet(wb.Sheets[wsName]);
+      // MEDIDAS lives in the same workbook — parse it too (null if absent)
+      const medidas = parseMedidas(wb.Sheets[MED_SHEET]);
+      // Overlay pending local values (not yet synced to Sheets) so the UI
+      // always shows the latest data even if a previous sync didn't finish.
+      const pendingItems = loadPending();
+      if (pendingItems.length) {
+        Object.values(sessions).forEach(sd => sd.exercises.forEach(ex => ex.sets.forEach(set => set.slots.forEach(slot => {
+          pendingItems.forEach(p => {
+            if (p.row !== slot.rowIdx) return;
+            if (p.col === slot.colKg) slot.kg = String(p.value);
+            else if (p.col === slot.colReps) slot.reps = String(p.value);
+            else if (p.col === slot.colRir) slot.rir = String(p.value);
+            else if (p.col === slot.colNotes) slot.notes = String(p.value);
+          });
+        }))));
+      }
+      if (pendingItems.length && medidas) {
+        medidas.forEach(rec => {
+          pendingItems.forEach(pi => {
+            if (pi.sheetName !== MED_SHEET || pi.row !== rec.rowIdx) return;
+            const f = rec.__fields || null;
+            if (pi.col === MED_NOTES_COL) { rec.notes = String(pi.value); return; }
+            const key = Object.keys(rec.values).find((k, i) => i + 2 === pi.col);
+            if (key) { rec.values[key] = String(pi.value); rec.hasData = true; }
+          });
+        });
+      }
       // Never overwrite state while mid-session (screen === "log") — would invalidate
       // all numPad.slot references and cause saves to go to wrong cells.
       // On first load screen is null so we always apply it.
       if (isFirstLoad.current) {
-        setState(prev => ({ wb, wsName, sessions }));
+        setState(prev => ({ wb, wsName, sessions, medidas }));
         setScreen("home");
         isFirstLoad.current = false;
       } else {
@@ -348,7 +388,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         // only update if not in an active session
         setState(prev => {
           if (prev.__screen === "log") return prev; // guard — never happens now
-          return { wb, wsName, sessions };
+          return { wb, wsName, sessions, medidas };
         });
       }
     } catch (err) {
@@ -378,14 +418,83 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     setScreen("log");
   };
 
-  // Track cells that failed to save — key: "exName-setIdx-field"
+  // Cells pending sync — key: "exName-setIdx-field" (derived from queue meta)
   const [failedCells, setFailedCells] = useState({});
+  const [pendingN, setPendingN] = useState(pendingCount());
+  const flushing = useRef(false);
 
-  // Called when numpad confirms a value.
-  // 1. Writes the single cell to Sheets (with 2 retries)
-  // 2. Updates the local state immediately
-  // 3. Marks cell as failed if all retries fail
-  const autoSaveCell = async (exName, setIdx, field, value, slot) => {
+  // Rebuild failedCells map from the persistent queue
+  const refreshPendingUI = () => {
+    const items = loadPending();
+    setPendingN(items.length);
+    const fc = {};
+    items.forEach(it => { if (it.meta) fc[it.meta] = true; });
+    setFailedCells(fc);
+  };
+
+  // Push all pending writes to Sheets in one batch per sheet.
+  // Called after every save, every 30s, on reconnect, and on app focus.
+  const flushQueue = async () => {
+    if (flushing.current) return;
+    const items = loadPending();
+    if (!items.length) { refreshPendingUI(); return; }
+    flushing.current = true;
+    setSaving(true);
+    try {
+      const bySheet = {};
+      items.forEach(it => { (bySheet[it.sheetName] = bySheet[it.sheetName] || []).push(it); });
+      for (const sheet of Object.keys(bySheet)) {
+        const its = bySheet[sheet];
+        await onSave(sheet, its.map(it => ({ row: it.row, col: it.col, value: it.value })));
+        removeSynced(its.map(it => it.id));
+      }
+      setSaveError(null);
+    } catch (e) {
+      // Data is safe in localStorage — will retry automatically
+      setSaveError(null);
+    } finally {
+      flushing.current = false;
+      setSaving(false);
+      refreshPendingUI();
+    }
+  };
+  const flushRef = useRef(flushQueue);
+  flushRef.current = flushQueue;
+
+  // Auto-sync: every 30s + when connection returns + when app regains focus
+  useEffect(() => {
+    const t = setInterval(() => flushRef.current(), 30000);
+    const onOnline = () => flushRef.current();
+    window.addEventListener('online', onOnline);
+    window.addEventListener('focus', onOnline);
+    return () => { clearInterval(t); window.removeEventListener('online', onOnline); window.removeEventListener('focus', onOnline); };
+  }, []);
+
+  // Save one measurement cell. Same queue, same guarantees as training data.
+  const saveMedida = (rec, field, value) => {
+    const num = parseFloat(String(value).replace(",", "."));
+    if (isNaN(num)) return;
+    setState(prev => {
+      if (!prev.medidas) return prev;
+      const medidas = prev.medidas.map(r => r.rowIdx === rec.rowIdx
+        ? { ...r, values: { ...r.values, [field.key]: String(value) }, hasData: true }
+        : r);
+      return { ...prev, medidas };
+    });
+    enqueue({
+      id: `M${rec.rowIdx}-${field.col}`,
+      sheetName: MED_SHEET,
+      row: rec.rowIdx, col: field.col, value: num,
+      meta: `medida-${rec.week}-${field.key}`,
+      ts: Date.now(),
+    });
+    refreshPendingUI();
+    flushQueue();
+  };
+
+  // LOCAL-FIRST SAVE: value goes to localStorage instantly (infallible),
+  // then the queue syncs to Sheets in background. Data can never be lost.
+  const autoSaveCell = (exName, setIdx, field, value, slot) => {
     const { wsName } = state;
     const fieldToCol = { kg: slot.colKg, reps: slot.colReps, rir: slot.colRir, notes: slot.colNotes };
     const col = fieldToCol[field];
@@ -394,9 +503,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     const cellValue = numericFields.includes(field) ? parseFloat(value) : value;
     if (isNaN(cellValue) && numericFields.includes(field)) return;
 
-    const cellKey = `${exName}-${setIdx}-${field}`;
-
-    // Update local state immediately so UI reflects the value
+    // 1. Update UI state immediately
     setState(prev => {
       const newState = { ...prev };
       const sd = newState.sessions[selSession];
@@ -411,38 +518,37 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       return newState;
     });
 
-    // Try to save to Sheets — up to 2 retries
-    setSaving(true);
-    let saved = false;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        await onSave(wsName, [{ row: slot.rowIdx, col, value: cellValue }]);
-        saved = true;
-        setFailedCells(prev => { const n = { ...prev }; delete n[cellKey]; return n; });
-        setSaveError(null);
-        break;
-      } catch (err) {
-        if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
-      }
-    }
-    if (!saved) {
-      setFailedCells(prev => ({ ...prev, [cellKey]: true }));
-      setSaveError("⚠ Fallo al guardar — revisa tu conexión");
-    }
-    setSaving(false);
+    // 2. Persist locally (instant, works offline)
+    enqueue({
+      id: `${slot.rowIdx}-${col}`,
+      sheetName: wsName,
+      row: slot.rowIdx, col, value: cellValue,
+      meta: `${exName}-${setIdx}-${field}`,
+      ts: Date.now(),
+    });
+    refreshPendingUI();
+
+    // 3. Sync to Sheets in background (fire and forget)
+    flushQueue();
   };
 
   // Called when user taps "Terminar sesión".
-  // Data is already saved cell by cell — just build summary and go to Done.
-  const finish = () => {
-    const { sessions } = state;
+  // Data is already saved cell by cell — just build summary, create next week headers, go to Done.
+  const finish = async () => {
+    // Final sync — make sure the Excel is complete before showing summary.
+    // If it fails, data stays safe in localStorage and syncs on next open.
+    await flushQueue();
+    const { sessions, wsName } = state;
     const sd = sessions[selSession];
     const nextWeek = sd.exercises[0]?.nextWeek ?? 0;
     const prevWeek = nextWeek - 1;
     const summaryItems = sd.exercises.map(ex => {
       // Use first set that has data (not necessarily set[0])
       const filledCur = ex.sets.map(s => s.slots[nextWeek]).find(s => s?.kg || s?.reps) || ex.sets[0]?.slots[nextWeek];
-      const filledPrev = ex.sets.map(s => prevWeek >= 0 ? s.slots[prevWeek] : null).find(s => s?.kg || s?.reps) || (prevWeek >= 0 ? ex.sets[0]?.slots[prevWeek] : null);
+      const filledPrev = prevWeek >= 0
+        ? (ex.sets.map(s => findLastRecorded(s.slots, prevWeek)?.slot).find(s => s?.kg || s?.reps)
+           || findLastRecorded(ex.sets[0]?.slots || [], prevWeek)?.slot || null)
+        : null;
       const cur = filledCur;
       const prev = filledPrev;
       const curKg = parseFloat(cur?.kg);
@@ -461,14 +567,75 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       return { name: ex.name, curKg, curReps, prevKg, prevReps, trend };
     }).filter(s => !isNaN(s.curKg) || !isNaN(s.curReps));
     setSummary(summaryItems);
-    setNewWeekCreated(nextWeek >= 15);
+
+    // Create headers for nextWeek+1 if they don't exist yet.
+    // We check by seeing if the slot for nextWeek+1 already has a colKg pointing
+    // to a column that exists — simplest proxy: does any exercise have a non-empty
+    // weekLabel for nextWeek+1? If weekData has no date there, the column is missing.
+    const futureWi = nextWeek + 1;
+    const futureBase = FIRST_WEEK_COL + futureWi * WEEK_OFFSET;
+    // Check if futureWi week label exists (means column was already created)
+    const futureLabel = sd.exercises[0]?.weekLabels?.[futureWi];
+    const alreadyExists = futureLabel && !futureLabel.startsWith("S"); // real date label vs fallback "S16"
+
+    if (!alreadyExists) {
+      try {
+        // Calculate the Monday date for futureWi based on the anchor week
+        // Find a known week to extrapolate from
+        const knownWi = sd.exercises[0]?.sets[0]?.slots?.findIndex?.((_, i) => {
+          const lbl = sd.exercises[0]?.weekLabels?.[i];
+          return lbl && !lbl.startsWith("S");
+        }) ?? -1;
+
+        // Build header cells for the new week column
+        // Row 1 (idx 1): "SEMANA X" label
+        // Row 4 (idx 4): column headers
+        const HEADERS = ["SERIES", "REPS OBJ.", "RIR OBJ.", "KG", "REPS REALIZ.", "RIR REALIZ.", "PROGRESO", "ANOTACIONES"];
+        const cells = [
+          { row: 1, col: futureBase, value: `SEMANA ${futureWi + 1}` },
+          ...HEADERS.map((h, i) => ({ row: 4, col: futureBase + i, value: h })),
+        ];
+
+        // Also write the Monday date for this week in row 1, col futureBase+1
+        // Extrapolate: each week = 7 days apart from any known anchor
+        const anchorWi = sd.exercises[0]?.sets[0]?.slots?.[nextWeek]?.weekIdx ?? nextWeek;
+        // Use the weekLabel of nextWeek as anchor if it looks like a date (dd/mm)
+        const anchorLabel = sd.exercises[0]?.weekLabels?.[nextWeek];
+        if (anchorLabel && /\d{2}\/\d{2}/.test(anchorLabel)) {
+          const [d, m] = anchorLabel.split("/").map(Number);
+          const anchorDate = new Date(new Date().getFullYear(), m - 1, d);
+          const futureDate = new Date(anchorDate.getTime() + 7 * 24 * 3600 * 1000);
+          const futureStr = `${String(futureDate.getDate()).padStart(2,"0")}/${String(futureDate.getMonth()+1).padStart(2,"0")}`;
+          cells.push({ row: 1, col: futureBase + 1, value: futureStr });
+        }
+
+        await onSave(wsName, cells);
+        setNewWeekCreated(true);
+      } catch (e) {
+        // Non-critical — don't block navigation
+        setNewWeekCreated(false);
+      }
+    } else {
+      setNewWeekCreated(false);
+    }
+
     setScreen("done");
   };
 
   if (!state) return null;
 
-  if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onSignOut={onSignOut} />;
-  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} onBack={() => setScreen("home")} />;
+  if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} onSignOut={onSignOut} />;
+  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} onSync={flushQueue} onBack={() => setScreen("home")} />;
+  if (screen === "medidas")   return state.medidas
+    ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue}
+        onOpenPad={(rec, f) => setNumPad({ med: { rec, field: f }, value: rec.values[f.key] || "",
+          label: `${f.label} · semana ${rec.week}`, hint: f.unit })}
+        onBack={() => setScreen("home")} />
+    : <div style={{ background: D.bg, minHeight: "100vh", color: D.text, fontFamily: D.font, padding: 40, textAlign: "center" }}>
+        <div style={{ fontSize: 15, marginBottom: 10 }}>No se encontró la hoja MEDIDAS</div>
+        <div style={{ fontSize: 12, color: D.muted, marginBottom: 24 }}>Este archivo no incluye seguimiento de medidas.</div>
+        <button onClick={() => setScreen("home")} style={{ background: D.card2, border: `1px solid ${D.border}`, color: D.text, borderRadius: 12, padding: "12px 24px", fontSize: 14 }}>Volver</button>
+      </div>;
   if (screen === "progress")  return <Progress sessions={state.sessions} onBack={() => setScreen("home")} />;
   if (screen === "done")      return <Done fileName={fileName} newWeekCreated={newWeekCreated} summary={summary} onBack={() => setScreen("home")} />;
 }
@@ -581,7 +748,7 @@ function TimerOverlay({ timer, onStop }) {
 }
 
 // ── HOME ───────────────────────────────────────────────────────────────────────
-function Home({ sessions, fileName, onSession, onProgress, onSignOut }) {
+function Home({ sessions, fileName, onSession, onProgress, onMedidas, onSignOut }) {
   const stagnantCount = Object.values(sessions).flatMap(s => s.exercises).filter(e => e.isStagnant).length
   const today = new Date()
   const dayName = today.toLocaleDateString("es-ES", { weekday: "long" })
@@ -627,6 +794,16 @@ function Home({ sessions, fileName, onSession, onProgress, onSignOut }) {
           <div style={{ fontSize: 28, color: D.accent }}>→</div>
         </div>
 
+        {/* Medidas card */}
+        <div onClick={onMedidas}
+          style={{ ...card({ padding: "18px 20px", marginBottom: 24, cursor: "pointer" }), display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>Medidas</div>
+            <div style={{ fontSize: 12, color: D.muted, marginTop: 3 }}>Peso · perímetros · evolución</div>
+          </div>
+          <div style={{ fontSize: 28, color: D.muted }}>→</div>
+        </div>
+
         {/* Sessions */}
         <div style={{ fontSize: 11, color: D.muted, letterSpacing: 2, textTransform: "uppercase", marginBottom: 12, fontFamily: D.mono }}>Esta semana</div>
         <div style={col({ gap: 10 })}>
@@ -670,7 +847,7 @@ function Home({ sessions, fileName, onSession, onProgress, onSignOut }) {
 }
 
 // ── LOG ────────────────────────────────────────────────────────────────────────
-function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, failedCells, onBack }) {
+function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, failedCells, pendingN, onSync, onBack }) {
   const [subModal, setSubModal] = useState(null)
   const [numPad, setNumPad] = useState(null) // { exName, si, field, value, hint }
   const [timer, setTimer] = useState(null)
@@ -726,6 +903,7 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
           label={numPad.label}
           hint={numPad.hint}
           onValue={v => {
+            if (numPad.med) { if (v !== "") saveMedida(numPad.med.rec, numPad.med.field, v); return; }
             onSet(numPad.exName, numPad.si, numPad.field, v);
             if (v !== '' && numPad.slot) {
               onAutoSave(numPad.exName, numPad.si, numPad.field, v, numPad.slot);
@@ -776,6 +954,15 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
               Semana {exercises[0]?.weekLabels?.[nextWeek] || nextWeek+1}
               {prevWeek >= 0 ? ` · ref. ${exercises[0]?.weekLabels?.[prevWeek] || prevWeek+1}` : ""}
             </div>
+          </div>
+          {/* Sync status badge */}
+          <div onClick={pendingN > 0 ? onSync : undefined}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, padding: "5px 12px", borderRadius: 20,
+              background: pendingN > 0 ? "#3a2a00" : "#0f2a12",
+              border: `1px solid ${pendingN > 0 ? "#8a6d00" : "#1e5228"}`,
+              cursor: pendingN > 0 ? "pointer" : "default", fontSize: 11, fontFamily: D.mono,
+              color: pendingN > 0 ? "#ffc933" : "#5fd97a" }}>
+            {saving ? "↻ sincronizando..." : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""} — tocar para sincronizar` : "✓ todo sincronizado"}
           </div>
           {filledCount > 0 && (
             <div style={{ background: D.accentDim, border: `1px solid ${D.accent}30`, borderRadius: 20, padding: "4px 12px", fontSize: 11, color: D.accent, fontWeight: 700 }}>
@@ -861,7 +1048,10 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                   {/* Input section — always shown */}
                   {ex.sets.map((set, si) => {
                     const f = fEx[si] || { kg: "", reps: "", rir: "", notes: "" }
-                    const prev = prevWeek >= 0 ? set.slots[prevWeek] : null
+                    const lastRec = prevWeek >= 0 ? findLastRecorded(set.slots, prevWeek) : null
+                    const prev = lastRec?.slot || null
+                    const refWeekIdx = lastRec?.weekIdx ?? -1
+                    const weeksAgo = refWeekIdx >= 0 ? nextWeek - refWeekIdx : 0
                     const pKg = prev?.kg || null
                     const pReps = prev?.reps || null
                     const repsObj = editedRepsObj[ex.name]?.[si] ?? set.repsObj
@@ -921,9 +1111,11 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                         )}
 
                         {/* Prev week reference — smaller, below suggestion */}
-                        {prevWeek >= 0 && (pKg || pReps) && (
+                        {refWeekIdx >= 0 && (pKg || pReps) && (
                           <div style={{ background: D.card2, borderRadius: 10, padding: "8px 14px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>SEMANA ANT. · {ex.weekLabels?.[prevWeek]}</div>
+                            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>
+                              {weeksAgo <= 1 ? "SEMANA ANT." : `HACE ${weeksAgo} SEMANAS`} · {ex.weekLabels?.[refWeekIdx]}
+                            </div>
                             <div style={row({ gap: 14 })}>
                               {pKg && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pKg}</span><span style={{ fontSize: 10, color: D.muted }}> kg</span></div>}
                               {pReps && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pReps}</span><span style={{ fontSize: 10, color: D.muted }}> r</span></div>}
@@ -1130,7 +1322,7 @@ function Progress({ sessions, onBack }) {
                     <LineChart data={chartData} margin={{ top: 4, right: 16, left: -16, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#1A1A1A" />
                       <XAxis dataKey="week" tick={{ fill: D.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fill: D.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
+                      <YAxis domain={niceDomain(chartData.map(d => d.kg), { minPad: 1.25 })} allowDecimals tick={{ fill: D.muted, fontSize: 9 }} axisLine={false} tickLine={false} />
                       <Tooltip contentStyle={{ background: "#111", border: "1px solid #222", borderRadius: 10, fontSize: 12, fontFamily: D.mono }} labelStyle={{ color: D.accent }} />
                       {(metric === "kg" || metric === "both") && <Line type="monotone" dataKey="kg" name="KG" stroke={D.accent} strokeWidth={2.5} dot={{ r: 4, fill: D.accent }} activeDot={{ r: 6 }} />}
                       {(metric === "reps" || metric === "both") && <Line type="monotone" dataKey="reps" name="Reps" stroke={D.blue} strokeWidth={2.5} dot={{ r: 4, fill: D.blue }} activeDot={{ r: 6 }} />}
