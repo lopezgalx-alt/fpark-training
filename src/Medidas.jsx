@@ -173,9 +173,9 @@ export default function Medidas({ rows, onOpenPad, onSetDate, onBackfillDates, o
 
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text, fontFamily: D.font }}>
-      <div style={{ padding: "16px 18px 12px", position: "sticky", top: 0, background: D.bg, zIndex: 10 }}>
+      <div style={{ padding: "calc(16px + env(safe-area-inset-top)) 18px 12px", position: "sticky", top: 0, background: D.bg, zIndex: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <button onClick={onBack} style={{ background: "none", border: "none", color: D.muted, fontSize: 14, padding: "6px 0", cursor: "pointer" }}>‹ Inicio</button>
+          <button onClick={onBack} style={{ background: D.card2, border: `1px solid ${D.border}`, color: D.text, fontSize: 14, padding: "10px 16px", borderRadius: 10, cursor: "pointer" }}>‹ Inicio</button>
           <div onClick={pendingN > 0 ? onSync : undefined}
             style={{ fontSize: 10, fontFamily: D.mono, padding: "4px 10px", borderRadius: 20,
               cursor: pendingN > 0 ? "pointer" : "default",

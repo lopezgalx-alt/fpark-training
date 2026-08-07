@@ -87,23 +87,35 @@ function buildWeekData(grid, weekBaseCols) {
 // Find which wi contains today using range detection:
 // wi contains today if finalMs[wi] <= today < finalMs[wi+1]
 // This works correctly even when Excel dates are Saturdays or have gaps.
-function findCurrentWeekIdx(weekData) {
-  const todayMs = new Date().setHours(12, 0, 0, 0); // midday to avoid DST edge cases
+function mondayMs(ms) {
+  const d = new Date(ms);
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));   // Mon=0 ... Sun=6
+  return x.getTime();
+}
 
-  // Find all wi with known ms, sorted
+function findCurrentWeekIdx(weekData) {
+  const todayMs = new Date().setHours(12, 0, 0, 0);
+  const thisMonday = mondayMs(todayMs);
+
   const known = weekData
     .map(({ ms }, wi) => ({ wi, ms }))
     .filter(w => w.ms != null)
     .sort((a, b) => a.ms - b.ms);
+  if (!known.length) return -1;
 
-  for (let i = 0; i < known.length; i++) {
-    const curr = known[i];
-    const next = known[i + 1];
-    const from = curr.ms;
-    const to = next ? next.ms : curr.ms + 7 * 24 * 3600 * 1000;
-    if (todayMs >= from && todayMs < to) return curr.wi;
-  }
-  return -1;
+  // The active block is the one belonging to the CALENDAR week we're in.
+  // Which weekday you train, or how many weeks are missing before, is
+  // irrelevant — what matters is the Mon–Sun week containing today.
+  const match = known.find(w => mondayMs(w.ms) === thisMonday);
+  if (match) return match.wi;
+
+  // No block for this calendar week: before the calendar → first;
+  // otherwise the next upcoming one, never a past week.
+  if (thisMonday < mondayMs(known[0].ms)) return known[0].wi;
+  const upcoming = known.find(w => mondayMs(w.ms) > thisMonday);
+  if (upcoming) return upcoming.wi;
+  return known[known.length - 1].wi;
 }
 
 // ── PROGRESSION SUGGESTION ────────────────────────────────────────────────────
@@ -269,6 +281,8 @@ function parseSheet(ws) {
       }
     }
   }
+  // Expose the week calendar so callers can detect/repair date drift
+  Object.values(sessions).forEach(sd => { sd.weekData = weekData; });
   return sessions;
 }
 
@@ -349,6 +363,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const wsName = wb.SheetNames.find(n => n.toUpperCase().includes("FPARK")) || wb.SheetNames.at(-1);
       const sessions = parseSheet(wb.Sheets[wsName]);
+      const weekDates = sessions[Object.keys(sessions)[0]]?.weekData || null;
       // MEDIDAS lives in the same workbook — parse it too (null if absent)
       const medidas = parseMedidas(wb.Sheets[MED_SHEET]);
       // Overlay pending local values (not yet synced to Sheets) so the UI
@@ -380,7 +395,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       // all numPad.slot references and cause saves to go to wrong cells.
       // On first load screen is null so we always apply it.
       if (isFirstLoad.current) {
-        setState(prev => ({ wb, wsName, sessions, medidas }));
+        setState(prev => ({ wb, wsName, sessions, medidas, weekDates }));
         setScreen("home");
         isFirstLoad.current = false;
       } else {
@@ -388,7 +403,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         // only update if not in an active session
         setState(prev => {
           if (prev.__screen === "log") return prev; // guard — never happens now
-          return { wb, wsName, sessions, medidas };
+          return { wb, wsName, sessions, medidas, weekDates };
         });
       }
     } catch (err) {
@@ -522,6 +537,44 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       meta: `medida-${rec.week}-fecha`,
       ts: Date.now(),
     });
+  };
+
+  // The workbook's future weeks can start on the wrong Monday (e.g. the season
+  // was planned to resume later than it actually did). Rewrite the dates of
+  // every week with no data so the first one is THIS calendar week, keeping
+  // 7-day spacing. Weeks that already hold data are never touched.
+  const calendarDrift = (() => {
+    const wds = state?.weekDates;
+    if (!wds || !wds.length) return null;
+    const today = new Date().setHours(12, 0, 0, 0);
+    const thisMonday = mondayMs(today);
+    const hasThisWeek = wds.some(w => w.ms != null && mondayMs(w.ms) === thisMonday);
+    if (hasThisWeek) return null;
+    // Only offer this if the current active block is a FUTURE empty one
+    const firstEmpty = wds.findIndex((w, wi) => w.ms != null && mondayMs(w.ms) > thisMonday);
+    if (firstEmpty < 0) return null;
+    return { firstEmpty, thisMonday, current: wds[firstEmpty].ms };
+  })();
+
+  const realignCalendar = () => {
+    if (!calendarDrift) return;
+    const { firstEmpty, thisMonday } = calendarDrift;
+    const cells = [];
+    for (let wi = firstEmpty; wi < state.weekDates.length; wi++) {
+      if (state.weekDates[wi]?.ms == null) continue;
+      const d = new Date(thisMonday);
+      d.setDate(d.getDate() + (wi - firstEmpty) * 7);
+      const txt = `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`;
+      cells.push({ row: 1, col: FIRST_WEEK_COL + wi * WEEK_OFFSET, value: txt });
+    }
+    if (!cells.length) return;
+    cells.forEach(c => enqueue({
+      id: `W1-${c.col}`, sheetName: state.wsName, row: c.row, col: c.col,
+      value: c.value, meta: `cal-${c.col}`, ts: Date.now(),
+    }));
+    refreshPendingUI();
+    flushQueue();
+    alert("Calendario ajustado. Recarga la app para ver la semana correcta.");
   };
 
   // Fill in the dates of every recorded week that has none, extrapolating
@@ -683,7 +736,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   if (!state) return null;
 
-  if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} onSignOut={onSignOut} />;
+  if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} drift={calendarDrift} onRealign={realignCalendar} onSignOut={onSignOut} />;
   if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} onSync={flushQueue} onBack={() => setScreen("home")} />;
   if (screen === "medidas")   return (<>
     {medPad && (
@@ -814,7 +867,7 @@ function TimerOverlay({ timer, onStop }) {
 }
 
 // ── HOME ───────────────────────────────────────────────────────────────────────
-function Home({ sessions, fileName, onSession, onProgress, onMedidas, onSignOut }) {
+function Home({ sessions, fileName, onSession, onProgress, onMedidas, drift, onRealign, onSignOut }) {
   const stagnantCount = Object.values(sessions).flatMap(s => s.exercises).filter(e => e.isStagnant).length
   const today = new Date()
   const dayName = today.toLocaleDateString("es-ES", { weekday: "long" })
@@ -859,6 +912,22 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, onSignOut 
           </div>
           <div style={{ fontSize: 28, color: D.accent }}>→</div>
         </div>
+
+        {/* Calendar drift warning */}
+        {drift && (
+          <div style={{ background: "#2a1f00", border: "1px solid #8a6d00", borderRadius: 14, padding: "14px 16px", marginBottom: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#ffc933" }}>El calendario no coincide con esta semana</div>
+            <div style={{ fontSize: 11, color: D.muted, marginTop: 5, lineHeight: 1.5 }}>
+              El siguiente bloque del Excel empieza el {new Date(drift.current).toLocaleDateString("es-ES", {day:"2-digit",month:"2-digit"})},
+              pero estamos en la semana del {new Date(drift.thisMonday).toLocaleDateString("es-ES", {day:"2-digit",month:"2-digit"})}.
+              Si registras ahora, irá al bloque equivocado.
+            </div>
+            <button onClick={onRealign}
+              style={{ marginTop: 10, background: "#ffc933", color: "#000", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+              Ajustar calendario a esta semana
+            </button>
+          </div>
+        )}
 
         {/* Medidas card */}
         <div onClick={onMedidas}
