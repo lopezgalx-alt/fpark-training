@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { loadPending, enqueue, removeSynced, pendingCount } from "./store";
-import Medidas, { parseMedidas, MED_SHEET, MED_NOTES_COL, niceDomain } from "./Medidas";
+import Medidas, { parseMedidas, MED_SHEET, MED_NOTES_COL, MED_DATE_COL, niceDomain } from "./Medidas";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const C = { accent: "#C8F135", dark: "#0D0D0D", card: "#161616", muted: "#555", muted2: "#2A2A2A", text: "#E8E8E8", red: "#FF6B6B", orange: "#F59E0B", blue: "#60A5FA", green: "#4ADE80" };
@@ -490,6 +490,34 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     });
     refreshPendingUI();
     flushQueue();
+    // First value of a week with no date yet → stamp it so the row is identifiable
+    if (!rec.date) {
+      const d = new Date();
+      const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+      saveMedidaDate(rec, monday);
+    }
+  };
+
+  // Write the week's date into the FECHA column (same local-first queue)
+  const saveMedidaDate = (rec, date) => {
+    if (!date) return;
+    const txt = `${String(date.getDate()).padStart(2,"0")}/${String(date.getMonth()+1).padStart(2,"0")}/${date.getFullYear()}`;
+    setState(prev => {
+      if (!prev.medidas) return prev;
+      const medidas = prev.medidas.map(r =>
+        r.rowIdx === rec.rowIdx ? { ...r, date: new Date(date) } : r);
+      return { ...prev, medidas };
+    });
+    enqueue({
+      id: `M${rec.rowIdx}-${MED_DATE_COL}`,
+      sheetName: MED_SHEET,
+      row: rec.rowIdx, col: MED_DATE_COL, value: txt,
+      meta: `medida-${rec.week}-fecha`,
+      ts: Date.now(),
+    });
+    refreshPendingUI();
+    flushQueue();
   };
 
   // LOCAL-FIRST SAVE: value goes to localStorage instantly (infallible),
@@ -626,8 +654,14 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} onSignOut={onSignOut} />;
   if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} onSync={flushQueue} onBack={() => setScreen("home")} />;
-  if (screen === "medidas")   return state.medidas
-    ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue}
+  if (screen === "medidas")   return (<>
+    {numPad && numPad.med && (
+      <NumPad value={numPad.value} label={numPad.label} hint={numPad.hint}
+        onValue={v => { if (v !== "") saveMedida(numPad.med.rec, numPad.med.field, v); }}
+        onClose={() => setNumPad(null)} />
+    )}
+    {state.medidas
+    ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue} onSetDate={saveMedidaDate}
         onOpenPad={(rec, f) => setNumPad({ med: { rec, field: f }, value: rec.values[f.key] || "",
           label: `${f.label} · semana ${rec.week}`, hint: f.unit })}
         onBack={() => setScreen("home")} />
@@ -635,7 +669,8 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         <div style={{ fontSize: 15, marginBottom: 10 }}>No se encontró la hoja MEDIDAS</div>
         <div style={{ fontSize: 12, color: D.muted, marginBottom: 24 }}>Este archivo no incluye seguimiento de medidas.</div>
         <button onClick={() => setScreen("home")} style={{ background: D.card2, border: `1px solid ${D.border}`, color: D.text, borderRadius: 12, padding: "12px 24px", fontSize: 14 }}>Volver</button>
-      </div>;
+      </div>}
+  </>);
   if (screen === "progress")  return <Progress sessions={state.sessions} onBack={() => setScreen("home")} />;
   if (screen === "done")      return <Done fileName={fileName} newWeekCreated={newWeekCreated} summary={summary} onBack={() => setScreen("home")} />;
 }

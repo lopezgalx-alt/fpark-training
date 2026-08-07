@@ -27,6 +27,43 @@ export const MED_FIELDS = [
   { key: "gluteo",  col: 8, label: "GLÚTEO",     unit: "cm", dec: true,  color: "#22D3EE" },
 ];
 const NOTES_COL = 13;
+export const MED_DATE_COL = 1;   // column B — FECHA
+const DATE_COL = MED_DATE_COL;
+
+// Excel stores dates as days since 1899-12-30
+function excelSerialToDate(n) {
+  if (!n || n < 20000) return null;
+  return new Date(Math.round((n - 25569) * 86400 * 1000));
+}
+
+// Monday of the week containing `d`
+export function mondayOf(d = new Date()) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const shift = (x.getDay() + 6) % 7;   // Mon=0 ... Sun=6
+  x.setDate(x.getDate() - shift);
+  return x;
+}
+
+export const fmtDate = d => d
+  ? `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`
+  : null;
+
+export const fmtDateFull = d => d
+  ? `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`
+  : null;
+
+// Infer the date of a week from any other row that has one (weeks are 7 days apart)
+export function inferDate(rows, idx) {
+  if (rows[idx]?.date) return rows[idx].date;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i]?.date) {
+      const d = new Date(rows[i].date);
+      d.setDate(d.getDate() + (idx - i) * 7);
+      return d;
+    }
+  }
+  return null;
+}
 
 // ── Parse the MEDIDAS sheet into an array of week records ────────────────────
 export function parseMedidas(ws) {
@@ -40,7 +77,17 @@ export function parseMedidas(ws) {
   for (let i = 0; i < TOTAL_WEEKS; i++) {
     const r = FIRST_ROW + i;
     if (r > range.e.r) break;
-    const rec = { week: i + 1, rowIdx: r, values: {}, notes: "" };
+    const rec = { week: i + 1, rowIdx: r, values: {}, notes: "", date: null };
+    const rawDate = get(r, DATE_COL);
+    if (rawDate instanceof Date) rec.date = rawDate;
+    else if (typeof rawDate === "number") rec.date = excelSerialToDate(rawDate);
+    else if (typeof rawDate === "string" && rawDate.trim()) {
+      const m = rawDate.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
+      if (m) {
+        const yr = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : new Date().getFullYear();
+        rec.date = new Date(yr, +m[2] - 1, +m[1]);
+      }
+    }
     MED_FIELDS.forEach(f => {
       const v = get(r, f.col);
       rec.values[f.key] = v == null || v === "" ? "" : String(v);
@@ -96,7 +143,7 @@ function fmtDelta(v, dec) {
   return { txt: (v > 0 ? "+" : "−") + s, color: v > 0 ? "#60A5FA" : "#F59E0B" };
 }
 
-export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onBack }) {
+export default function Medidas({ rows, onOpenPad, onSetDate, onSync, pendingN, saving, onBack }) {
   const [tab, setTab] = useState("entrada");
   const [selField, setSelField] = useState("peso");
 
@@ -104,6 +151,8 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
   // Default to the first empty week after the last filled one
   const [weekIdx, setWeekIdx] = useState(Math.min(lastIdx + 1, rows.length - 1));
   const rec = rows[weekIdx];
+  // Prefer the stored date; otherwise extrapolate from any week that has one
+  const shownDate = rec.date || inferDate(rows, weekIdx);
   const prevRec = useMemo(() => {
     for (let i = weekIdx - 1; i >= 0; i--) if (rows[i].hasData) return rows[i];
     return null;
@@ -112,7 +161,9 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
   const chartData = useMemo(() => {
     const f = MED_FIELDS.find(x => x.key === selField);
     return rows.filter(r => r.values[f.key] !== "")
-      .map(r => ({ semana: r.week, v: parseFloat(String(r.values[f.key]).replace(",", ".")) }))
+      .map(r => ({ semana: r.week,
+                   etq: fmtDate(r.date || inferDate(rows, rows.indexOf(r))) || `S${r.week}`,
+                   v: parseFloat(String(r.values[f.key]).replace(",", ".")) }))
       .filter(d => !isNaN(d.v));
   }, [rows, selField]);
 
@@ -156,9 +207,12 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
               style={{ background: D.card2, border: `1px solid ${D.border}`, color: weekIdx === 0 ? D.muted : D.text,
                 borderRadius: 10, padding: "10px 16px", fontSize: 16, cursor: "pointer" }}>‹</button>
             <div style={{ flex: 1, textAlign: "center" }}>
-              <div style={{ fontSize: 17, fontWeight: 800 }}>Semana {rec.week}</div>
-              <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono, marginTop: 2 }}>
-                {rec.hasData ? "registrada · toca para corregir" : "sin registrar"}
+              <div style={{ fontSize: 19, fontWeight: 800 }}>
+                {shownDate ? fmtDateFull(shownDate) : `Semana ${rec.week}`}
+              </div>
+              <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono, marginTop: 3 }}>
+                Semana {rec.week} · {rec.hasData ? "registrada" : "sin registrar"}
+                {!rec.date && shownDate ? " · fecha estimada" : ""}
               </div>
             </div>
             <button onClick={() => setWeekIdx(i => Math.min(rows.length - 1, i + 1))} disabled={weekIdx === rows.length - 1}
@@ -181,7 +235,7 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
                   <div style={{ fontSize: 11, color: D.muted, fontFamily: D.mono, letterSpacing: 0.5 }}>{f.label}</div>
                   {prevRec && !isNaN(pv) && (
                     <div style={{ fontSize: 10, color: D.muted, marginTop: 3, fontFamily: D.mono }}>
-                      sem. {prevRec.week}: {prevRec.values[f.key]} {f.unit}
+                      {fmtDate(prevRec.date || inferDate(rows, rows.indexOf(prevRec))) || `sem. ${prevRec.week}`}: {prevRec.values[f.key]} {f.unit}
                     </div>
                   )}
                 </div>
@@ -195,6 +249,14 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
               </div>
             );
           })}
+
+          {!rec.date && (
+            <button onClick={() => onSetDate(rec, shownDate || mondayOf())}
+              style={{ width: "100%", background: D.card2, border: `1px dashed ${D.border}`, color: D.muted,
+                borderRadius: 12, padding: "12px 0", fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+              Fijar fecha {fmtDateFull(shownDate || mondayOf())} en la hoja
+            </button>
+          )}
 
           <div style={{ fontSize: 10, color: D.muted, textAlign: "center", marginTop: 16, lineHeight: 1.6 }}>
             Mide siempre en las mismas condiciones: mismo punto, misma hora, en ayunas si puedes.
@@ -232,7 +294,7 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
                   </div>
                   {totalDelta != null && (
                     <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>DESDE SEM. {chartData[0].semana}</div>
+                      <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>DESDE {chartData[0].etq}</div>
                       <div style={{ fontSize: 24, fontWeight: 800, fontFamily: D.mono,
                         color: totalDelta > 0 ? "#60A5FA" : "#F59E0B" }}>
                         {totalDelta > 0 ? "+" : "−"}{Math.abs(totalDelta).toFixed(1)}
@@ -244,10 +306,10 @@ export default function Medidas({ rows, onOpenPad, onSync, pendingN, saving, onB
                 <ResponsiveContainer width="100%" height={200}>
                   <LineChart data={chartData} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
                     <CartesianGrid stroke="#1e1e1e" vertical={false} />
-                    <XAxis dataKey="semana" tick={{ fill: "#666", fontSize: 10 }} axisLine={{ stroke: "#222" }} tickLine={false} />
+                    <XAxis dataKey="etq" minTickGap={28} tick={{ fill: "#666", fontSize: 10 }} axisLine={{ stroke: "#222" }} tickLine={false} />
                     <YAxis domain={niceDomain(chartData.map(d => d.v))} allowDecimals tick={{ fill: "#666", fontSize: 10 }} axisLine={false} tickLine={false} />
                     <Tooltip contentStyle={{ background: "#181818", border: "1px solid #333", borderRadius: 10, fontSize: 12 }}
-                      labelStyle={{ color: "#999" }} labelFormatter={l => `Semana ${l}`}
+                      labelStyle={{ color: "#999" }} labelFormatter={l => l}
                       formatter={v => [`${v} ${field.unit}`, field.label]} />
                     <Line type="monotone" dataKey="v" stroke={field.color} strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
                   </LineChart>
