@@ -539,52 +539,32 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     });
   };
 
-  // The workbook's future weeks can start on the wrong Monday (e.g. the season
-  // was planned to resume later than it actually did). Rewrite the dates of
-  // every week with no data so the first one is THIS calendar week, keeping
-  // 7-day spacing. Weeks that already hold data are never touched.
-  const calendarDrift = (() => {
+  // Rewrite EVERY week date as: first week + 7 days per block.
+  // Deliberately dumb: no gap detection, no "first empty block" logic — that
+  // is what corrupted the calendar by overwriting weeks that held data.
+  // Missing weeks stay as empty blocks with their own correct date.
+  // Only row 2 (the date row) is touched; no training data is ever written.
+  const rebuildCalendar = () => {
     const wds = state?.weekDates;
-    if (!wds || !wds.length) return null;
-    const today = new Date().setHours(12, 0, 0, 0);
-    const thisMonday = mondayMs(today);
-    const hasThisWeek = wds.some(w => w.ms != null && mondayMs(w.ms) === thisMonday);
-    if (hasThisWeek) return null;
-    // Only offer this if the current active block is a FUTURE empty one
-    const firstEmpty = wds.findIndex((w, wi) => w.ms != null && mondayMs(w.ms) > thisMonday);
-    if (firstEmpty < 0) return null;
-    return { firstEmpty, thisMonday, current: wds[firstEmpty].ms };
-  })();
-
-  const realignCalendar = () => {
-    const wds = state?.weekDates;
-    if (!wds) return;
-    const today = new Date().setHours(12, 0, 0, 0);
-    const thisMonday = mondayMs(today);
-    // First block with no recorded data — that's where the new calendar starts
-    const sd0 = state.sessions[Object.keys(state.sessions)[0]];
-    let firstEmpty = -1;
-    for (let wi = 0; wi < wds.length; wi++) {
-      const any = sd0?.exercises?.some(ex => ex.sets.some(s => s.slots[wi]?.kg || s.slots[wi]?.reps));
-      if (!any) { firstEmpty = wi; break; }
-    }
-    if (firstEmpty < 0) return;
+    if (!wds || !wds.length) return;
+    const anchorIdx = wds.findIndex(w => w.ms != null);
+    if (anchorIdx < 0) return;
+    // Anchor on the Monday of the first dated week
+    const anchor = mondayMs(wds[anchorIdx].ms);
     const cells = [];
-    for (let wi = firstEmpty; wi < state.weekDates.length; wi++) {
-      if (state.weekDates[wi]?.ms == null) continue;
-      const d = new Date(thisMonday);
-      d.setDate(d.getDate() + (wi - firstEmpty) * 7);
+    for (let wi = 0; wi < wds.length; wi++) {
+      const d = new Date(anchor);
+      d.setDate(d.getDate() + (wi - anchorIdx) * 7);
       const txt = `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`;
-      cells.push({ row: 1, col: FIRST_WEEK_COL + wi * WEEK_OFFSET, value: txt });
+      cells.push({ col: FIRST_WEEK_COL + wi * WEEK_OFFSET, value: txt });
     }
-    if (!cells.length) return;
-    cells.forEach(c => enqueue({
-      id: `W1-${c.col}`, sheetName: state.wsName, row: c.row, col: c.col,
-      value: c.value, meta: `cal-${c.col}`, ts: Date.now(),
+    cells.forEach(x => enqueue({
+      id: `W1-${x.col}`, sheetName: state.wsName, row: 1, col: x.col,
+      value: x.value, meta: `cal-${x.col}`, ts: Date.now(),
     }));
     refreshPendingUI();
     flushQueue();
-    alert("Calendario ajustado. Recarga la app para ver la semana correcta.");
+    alert(`Calendario recalculado: ${cells.length} semanas seguidas desde la primera. Recarga la app.`);
   };
 
   // Fill in the dates of every recorded week that has none, extrapolating
@@ -746,7 +726,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   if (!state) return null;
 
-  if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} drift={calendarDrift} onRealign={realignCalendar} onSignOut={onSignOut} />;
+  if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} onRealign={rebuildCalendar} onSignOut={onSignOut} />;
   if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} onSync={flushQueue} onBack={() => setScreen("home")} />;
   if (screen === "medidas")   return (<>
     {medPad && (
@@ -877,7 +857,7 @@ function TimerOverlay({ timer, onStop }) {
 }
 
 // ── HOME ───────────────────────────────────────────────────────────────────────
-function Home({ sessions, fileName, onSession, onProgress, onMedidas, drift, onRealign, onSignOut }) {
+function Home({ sessions, fileName, onSession, onProgress, onMedidas, onRealign, onSignOut }) {
   const stagnantCount = Object.values(sessions).flatMap(s => s.exercises).filter(e => e.isStagnant).length
   const today = new Date()
   const dayName = today.toLocaleDateString("es-ES", { weekday: "long" })
@@ -926,24 +906,8 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, drift, onR
         {/* Calendar realign — always available */}
         <div onClick={onRealign}
           style={{ fontSize: 10, color: D.muted, textAlign: "center", marginBottom: 14, cursor: "pointer", textDecoration: "underline" }}>
-          Ajustar calendario a esta semana
+          Recalcular fechas del calendario
         </div>
-
-        {/* Calendar drift warning */}
-        {drift && (
-          <div style={{ background: "#2a1f00", border: "1px solid #8a6d00", borderRadius: 14, padding: "14px 16px", marginBottom: 18 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#ffc933" }}>El calendario no coincide con esta semana</div>
-            <div style={{ fontSize: 11, color: D.muted, marginTop: 5, lineHeight: 1.5 }}>
-              El siguiente bloque del Excel empieza el {new Date(drift.current).toLocaleDateString("es-ES", {day:"2-digit",month:"2-digit"})},
-              pero estamos en la semana del {new Date(drift.thisMonday).toLocaleDateString("es-ES", {day:"2-digit",month:"2-digit"})}.
-              Si registras ahora, irá al bloque equivocado.
-            </div>
-            <button onClick={onRealign}
-              style={{ marginTop: 10, background: "#ffc933", color: "#000", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
-              Ajustar calendario a esta semana
-            </button>
-          </div>
-        )}
 
         {/* Medidas card */}
         <div onClick={onMedidas}
