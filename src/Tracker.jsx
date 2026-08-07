@@ -557,8 +557,18 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
   })();
 
   const realignCalendar = () => {
-    if (!calendarDrift) return;
-    const { firstEmpty, thisMonday } = calendarDrift;
+    const wds = state?.weekDates;
+    if (!wds) return;
+    const today = new Date().setHours(12, 0, 0, 0);
+    const thisMonday = mondayMs(today);
+    // First block with no recorded data — that's where the new calendar starts
+    const sd0 = state.sessions[Object.keys(state.sessions)[0]];
+    let firstEmpty = -1;
+    for (let wi = 0; wi < wds.length; wi++) {
+      const any = sd0?.exercises?.some(ex => ex.sets.some(s => s.slots[wi]?.kg || s.slots[wi]?.reps));
+      if (!any) { firstEmpty = wi; break; }
+    }
+    if (firstEmpty < 0) return;
     const cells = [];
     for (let wi = firstEmpty; wi < state.weekDates.length; wi++) {
       if (state.weekDates[wi]?.ms == null) continue;
@@ -911,6 +921,12 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, drift, onR
             <div style={{ fontSize: 12, color: D.muted, marginTop: 3 }}>Gráficas · PRs · evolución</div>
           </div>
           <div style={{ fontSize: 28, color: D.accent }}>→</div>
+        </div>
+
+        {/* Calendar realign — always available */}
+        <div onClick={onRealign}
+          style={{ fontSize: 10, color: D.muted, textAlign: "center", marginBottom: 14, cursor: "pointer", textDecoration: "underline" }}>
+          Ajustar calendario a esta semana
         </div>
 
         {/* Calendar drift warning */}

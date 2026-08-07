@@ -176,7 +176,10 @@ export async function writeCells(sheetName, cellUpdates) {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ valueInputOption: 'RAW', data: valueRanges }),
+      // USER_ENTERED so Google parses '03/08/2026' as a real date instead of
+      // storing it as text — text dates are invisible to the parser and made
+      // writes land in the wrong week block.
+      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: valueRanges }),
     }
   )
 
