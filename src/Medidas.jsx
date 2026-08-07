@@ -143,7 +143,7 @@ function fmtDelta(v, dec) {
   return { txt: (v > 0 ? "+" : "−") + s, color: v > 0 ? "#60A5FA" : "#F59E0B" };
 }
 
-export default function Medidas({ rows, onOpenPad, onSetDate, onSync, pendingN, saving, onBack }) {
+export default function Medidas({ rows, onOpenPad, onSetDate, onBackfillDates, onSync, pendingN, saving, onBack }) {
   const [tab, setTab] = useState("entrada");
   const [selField, setSelField] = useState("peso");
 
@@ -249,6 +249,23 @@ export default function Medidas({ rows, onOpenPad, onSetDate, onSync, pendingN, 
               </div>
             );
           })}
+
+          {/* Backfill: weeks with data but no date, once at least one date exists */}
+          {(() => {
+            const anchored = rows.some(r => r.date);
+            const missing = rows.filter(r => r.hasData && !r.date).length;
+            if (!anchored || missing === 0) return null;
+            return (
+              <button onClick={() => onBackfillDates()}
+                style={{ width: "100%", background: D.card, border: `1px solid ${D.accent}55`, color: D.accent,
+                  borderRadius: 12, padding: "13px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 10 }}>
+                Calcular las {missing} fechas anteriores
+                <div style={{ fontSize: 9, color: D.muted, fontWeight: 400, marginTop: 3 }}>
+                  a partir de {fmtDateFull(rows.find(r => r.date).date)}, restando 7 días por semana
+                </div>
+              </button>
+            );
+          })()}
 
           {!rec.date && (
             <button onClick={() => onSetDate(rec, shownDate || mondayOf())}

@@ -524,6 +524,26 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
     });
   };
 
+  // Fill in the dates of every recorded week that has none, extrapolating
+  // 7 days per week from the first week that does. These are ESTIMATES: they
+  // assume the weeks ran consecutively with no skipped weeks.
+  const backfillDates = () => {
+    const rows = state.medidas;
+    if (!rows) return;
+    const anchorIdx = rows.findIndex(r => r.date);
+    if (anchorIdx < 0) return;
+    const anchor = rows[anchorIdx].date;
+    let n = 0;
+    rows.forEach((r, i) => {
+      if (!r.hasData || r.date) return;
+      const d = new Date(anchor);
+      d.setDate(d.getDate() + (i - anchorIdx) * 7);
+      stampDate(r, d);
+      n++;
+    });
+    if (n) { refreshPendingUI(); flushQueue(); }
+  };
+
   // Write the week's date into the FECHA column (same local-first queue)
   const saveMedidaDate = (rec, date) => {
     stampDate(rec, date);
@@ -672,7 +692,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         onClose={() => setMedPad(null)} />
     )}
     {state.medidas
-    ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue} onSetDate={saveMedidaDate}
+    ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue} onSetDate={saveMedidaDate} onBackfillDates={backfillDates}
         onOpenPad={(rec, f) => setMedPad({ rec, field: f, value: rec.values[f.key] || "",
           label: `${f.label} · ${f.unit}`, hint: f.unit })}
         onBack={() => setScreen("home")} />
