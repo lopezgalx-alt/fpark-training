@@ -420,6 +420,8 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   // Cells pending sync — key: "exName-setIdx-field" (derived from queue meta)
   const [failedCells, setFailedCells] = useState({});
+  // Numpad for the medidas screen — Log has its own, and its state is not in scope here
+  const [medPad, setMedPad] = useState(null);
   const [pendingN, setPendingN] = useState(pendingCount());
   const flushing = useRef(false);
 
@@ -456,6 +458,9 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       flushing.current = false;
       setSaving(false);
       refreshPendingUI();
+      // Items enqueued while this flush was running would otherwise wait
+      // for the 30s timer — send them now.
+      if (loadPending().length) setTimeout(() => flushRef.current(), 0);
     }
   };
   const flushRef = useRef(flushQueue);
@@ -488,19 +493,20 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       meta: `medida-${rec.week}-${field.key}`,
       ts: Date.now(),
     });
-    refreshPendingUI();
-    flushQueue();
-    // First value of a week with no date yet → stamp it so the row is identifiable
+    // First value of a week with no date yet → stamp it so the row is identifiable.
+    // Must be enqueued BEFORE flushing, or it misses this batch.
     if (!rec.date) {
       const d = new Date();
       const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
-      saveMedidaDate(rec, monday);
+      stampDate(rec, monday);
     }
+    refreshPendingUI();
+    flushQueue();
   };
 
-  // Write the week's date into the FECHA column (same local-first queue)
-  const saveMedidaDate = (rec, date) => {
+  // Queue a date write without flushing (caller decides when to flush)
+  const stampDate = (rec, date) => {
     if (!date) return;
     const txt = `${String(date.getDate()).padStart(2,"0")}/${String(date.getMonth()+1).padStart(2,"0")}/${date.getFullYear()}`;
     setState(prev => {
@@ -516,6 +522,11 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
       meta: `medida-${rec.week}-fecha`,
       ts: Date.now(),
     });
+  };
+
+  // Write the week's date into the FECHA column (same local-first queue)
+  const saveMedidaDate = (rec, date) => {
+    stampDate(rec, date);
     refreshPendingUI();
     flushQueue();
   };
@@ -655,15 +666,15 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
   if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} onSignOut={onSignOut} />;
   if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} onSync={flushQueue} onBack={() => setScreen("home")} />;
   if (screen === "medidas")   return (<>
-    {numPad && numPad.med && (
-      <NumPad value={numPad.value} label={numPad.label} hint={numPad.hint}
-        onValue={v => { if (v !== "") saveMedida(numPad.med.rec, numPad.med.field, v); }}
-        onClose={() => setNumPad(null)} />
+    {medPad && (
+      <NumPad value={medPad.value} label={medPad.label} hint={medPad.hint}
+        onValue={v => { if (v !== "") saveMedida(medPad.rec, medPad.field, v); }}
+        onClose={() => setMedPad(null)} />
     )}
     {state.medidas
     ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue} onSetDate={saveMedidaDate}
-        onOpenPad={(rec, f) => setNumPad({ med: { rec, field: f }, value: rec.values[f.key] || "",
-          label: `${f.label} · semana ${rec.week}`, hint: f.unit })}
+        onOpenPad={(rec, f) => setMedPad({ rec, field: f, value: rec.values[f.key] || "",
+          label: `${f.label} · ${f.unit}`, hint: f.unit })}
         onBack={() => setScreen("home")} />
     : <div style={{ background: D.bg, minHeight: "100vh", color: D.text, fontFamily: D.font, padding: 40, textAlign: "center" }}>
         <div style={{ fontSize: 15, marginBottom: 10 }}>No se encontró la hoja MEDIDAS</div>
