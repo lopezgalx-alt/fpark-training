@@ -893,34 +893,24 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, onRealign,
           </div>
         )}
 
-        {/* Progress card */}
-        <div onClick={onProgress}
-          style={{ ...card({ padding: "18px 20px", marginBottom: 24, cursor: "pointer", background: D.accentDim, border: `1px solid ${D.accent}20` }), display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: D.accent }}>Ver progreso</div>
-            <div style={{ fontSize: 12, color: D.muted, marginTop: 3 }}>Gráficas · PRs · evolución</div>
-          </div>
-          <div style={{ fontSize: 28, color: D.accent }}>→</div>
-        </div>
-
-        {/* Calendar realign — always available */}
-        <div onClick={onRealign}
-          style={{ fontSize: 10, color: D.muted, textAlign: "center", marginBottom: 14, cursor: "pointer", textDecoration: "underline" }}>
-          Recalcular fechas del calendario
-        </div>
-
-        {/* Medidas card */}
-        <div onClick={onMedidas}
-          style={{ ...card({ padding: "18px 20px", marginBottom: 24, cursor: "pointer" }), display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>Medidas</div>
-            <div style={{ fontSize: 12, color: D.muted, marginTop: 3 }}>Peso · perímetros · evolución</div>
-          </div>
-          <div style={{ fontSize: 28, color: D.muted }}>→</div>
+        {/* ── Módulos ── */}
+        <div style={{ fontSize: 10, color: D.muted, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10, fontFamily: D.mono }}>Módulos</div>
+        <div style={{ display: "flex", gap: 10, marginBottom: 26 }}>
+          {[
+            { key: "prog", label: "Progreso", sub: "Cargas y récords", icon: "📈", onClick: onProgress, color: D.accent },
+            { key: "med",  label: "Medidas",  sub: "Peso y perímetros", icon: "📏", onClick: onMedidas,  color: D.blue },
+          ].map(m => (
+            <div key={m.key} onClick={m.onClick}
+              style={{ flex: 1, background: D.card, border: `1px solid ${m.color}25`, borderRadius: 16, padding: "16px 14px", cursor: "pointer" }}>
+              <div style={{ fontSize: 22, marginBottom: 8 }}>{m.icon}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: m.color }}>{m.label}</div>
+              <div style={{ fontSize: 10, color: D.muted, marginTop: 3, lineHeight: 1.4 }}>{m.sub}</div>
+            </div>
+          ))}
         </div>
 
         {/* Sessions */}
-        <div style={{ fontSize: 11, color: D.muted, letterSpacing: 2, textTransform: "uppercase", marginBottom: 12, fontFamily: D.mono }}>Esta semana</div>
+        <div style={{ fontSize: 10, color: D.muted, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10, fontFamily: D.mono }}>Entrenamientos · esta semana</div>
         <div style={col({ gap: 10 })}>
           {Object.entries(sessions).map(([name, sd]) => {
             const nw = sd.exercises[0]?.nextWeek ?? 0
@@ -956,6 +946,11 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, onRealign,
             )
           })}
         </div>
+
+        <div onClick={onRealign}
+          style={{ fontSize: 10, color: D.border, textAlign: "center", marginTop: 32, cursor: "pointer" }}>
+          Recalcular fechas del calendario
+        </div>
       </div>
     </div>
   )
@@ -964,8 +959,11 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, onRealign,
 // ── LOG ────────────────────────────────────────────────────────────────────────
 function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, failedCells, pendingN, onSync, onBack }) {
   const [subModal, setSubModal] = useState(null)
-  const [numPad, setNumPad] = useState(null) // { exName, si, field, value, hint }
+  const [numPad, setNumPad] = useState(null)
   const [timer, setTimer] = useState(null)
+  const [exIdx, setExIdx] = useState(0)
+  const [setIdx, setSetIdx] = useState(0)
+  const [restOffer, setRestOffer] = useState(false)
   const timerRef = useRef(null)
 
   const startTimer = (secs) => {
@@ -982,8 +980,8 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
       })
     }, 1000)
   }
-
   const stopTimer = () => { if (timerRef.current) clearInterval(timerRef.current); setTimer(null) }
+  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current) }, [])
 
   const exercises = sd?.exercises || []
   const nextWeek = exercises[0]?.nextWeek ?? 0
@@ -993,7 +991,6 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
     exName: ex.name, newName: substitutions[ex.name] || "",
     seriesRepsObj: ex.sets.map((set, si) => editedRepsObj[ex.name]?.[si] ?? set.repsObj ?? ""),
   })
-
   const confirmSub = () => {
     if (subModal.newName.trim()) setSubstitutions(p => ({ ...p, [subModal.exName]: subModal.newName.trim() }))
     const newEdited = {}
@@ -1002,51 +999,61 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
     setSubModal(null)
   }
 
-  // Count filled exercises
-  const filledCount = exercises.filter(ex => {
-    const f = form[ex.name] || []
-    return f.some(s => s.kg || s.reps)
-  }).length
+  // A set counts as done when it has both kg and reps (in the form or already saved)
+  const setDone = (ex, si) => {
+    const f = (form[ex.name] || [])[si] || {}
+    if (f.kg && f.reps) return true
+    const slot = ex.sets[si]?.slots[nextWeek]
+    return !!(slot && slot.kg && slot.reps)
+  }
+  const exDone = ex => ex.sets.every((_, si) => setDone(ex, si))
+  const doneCount = exercises.filter(exDone).length
+  const pct = exercises.length ? Math.round(doneCount / exercises.length * 100) : 0
+
+  const ex = exercises[exIdx]
+  if (!ex) return null
+  const displayName = substitutions[ex.name] || ex.name
+  const fEx = form[ex.name] || []
+  const set = ex.sets[setIdx]
+  const f = fEx[setIdx] || { kg: "", reps: "", rir: "", notes: "" }
+
+  const lastRec = prevWeek >= 0 && set ? findLastRecorded(set.slots, prevWeek) : null
+  const prev = lastRec?.slot || null
+  const refWeekIdx = lastRec?.weekIdx ?? -1
+  const weeksAgo = refWeekIdx >= 0 ? nextWeek - refWeekIdx : 0
+  const pKg = prev?.kg || null
+  const pReps = prev?.reps || null
+  const repsObj = editedRepsObj[ex.name]?.[setIdx] ?? set?.repsObj
+  const loadRec = getLoadRec(prev?.reps, repsObj)
+  const suggestion = suggestProgression(prev?.kg, prev?.reps, repsObj)
+
+  const goEx = i => { setExIdx(i); setSetIdx(0); setRestOffer(false); window.scrollTo(0, 0) }
+  const isLast = exIdx === exercises.length - 1
 
   return (
     <div style={{ background: D.bg, minHeight: "100vh", color: D.text, fontFamily: D.font }}>
-
-      {/* Numpad overlay */}
       {numPad && (
-        <NumPad
-          value={numPad.value}
-          label={numPad.label}
-          hint={numPad.hint}
+        <NumPad value={numPad.value} label={numPad.label} hint={numPad.hint}
           onValue={v => {
-            if (numPad.med) { if (v !== "") saveMedida(numPad.med.rec, numPad.med.field, v); return; }
-            onSet(numPad.exName, numPad.si, numPad.field, v);
-            if (v !== '' && numPad.slot) {
-              onAutoSave(numPad.exName, numPad.si, numPad.field, v, numPad.slot);
-            }
+            onSet(numPad.exName, numPad.si, numPad.field, v)
+            if (v !== '' && numPad.slot) onAutoSave(numPad.exName, numPad.si, numPad.field, v, numPad.slot)
+            if (numPad.field === "reps" && v !== '') setRestOffer(true)
           }}
-          onClose={() => setNumPad(null)}
-        />
+          onClose={() => setNumPad(null)} />
       )}
-
-      {/* Timer overlay */}
       <TimerOverlay timer={timer} onStop={stopTimer} />
 
-      {/* Sub modal */}
       {subModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ ...card({ padding: 24, width: "100%", maxWidth: 380, maxHeight: "80vh", overflowY: "auto" }) }}>
-            <div style={{ fontSize: 11, color: D.muted, letterSpacing: 2, marginBottom: 6, fontFamily: D.mono }}>EDITAR EJERCICIO</div>
-            <div style={{ fontSize: 13, color: D.muted, marginBottom: 18, lineHeight: 1.4 }}>{subModal.exName}</div>
-            <div style={{ fontSize: 11, color: D.muted, marginBottom: 8 }}>Nombre nuevo (opcional)</div>
+        <div style={{ position: "fixed", inset: 0, zIndex: 150, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: D.card, borderRadius: 18, padding: 20, width: "100%", maxWidth: 420, maxHeight: "80vh", overflowY: "auto" }}>
+            <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 14 }}>Editar ejercicio</div>
             <input type="text" value={subModal.newName} onChange={e => setSubModal(p => ({ ...p, newName: e.target.value }))}
-              placeholder="Dejar vacío para mantener" style={{ ...inp, marginBottom: 20 }} />
-            <div style={{ fontSize: 11, color: D.muted, marginBottom: 12 }}>Reps objetivo por serie</div>
+              placeholder={subModal.exName} style={{ ...inp, marginBottom: 14 }} />
             {subModal.seriesRepsObj.map((val, si) => (
-              <div key={si} style={row({ gap: 12, marginBottom: 10 })}>
-                <div style={{ fontSize: 12, color: D.muted, width: 56 }}>Serie {si+1}</div>
+              <div key={si} style={row({ gap: 10, marginBottom: 8, alignItems: "center" })}>
+                <div style={{ fontSize: 12, color: D.muted, width: 70, fontFamily: D.mono }}>{ex.sets[si]?.label || `S${si+1}`}</div>
                 <input type="text" value={val} onChange={e => setSubModal(p => { const s = [...p.seriesRepsObj]; s[si] = e.target.value; return { ...p, seriesRepsObj: s } })}
-                  placeholder="6-8" style={{ ...inp, width: 80, textAlign: "center", fontSize: 16, fontWeight: 700 }} />
-                <div style={{ fontSize: 11, color: D.muted }}>reps</div>
+                  placeholder="6-8" style={{ ...inp, flex: 1 }} />
               </div>
             ))}
             <div style={row({ gap: 10, marginTop: 20 })}>
@@ -1057,271 +1064,197 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
         </div>
       )}
 
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 16px 140px" }}>
-
-        {/* Header */}
-        <div style={{ padding: "env(safe-area-inset-top,20px) 0 20px", display: "flex", alignItems: "center", gap: 14 }}>
-          <button onClick={onBack} style={{ background: D.card, border: `1px solid ${D.border}`, borderRadius: 12, width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, color: D.muted, cursor: "pointer" }}>‹</button>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: D.muted, textTransform: "uppercase", letterSpacing: 2, fontFamily: D.mono }}>Sesión de hoy</div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: D.accent, letterSpacing: -0.5 }}>{session}</div>
-            <div style={{ fontSize: 11, color: D.muted, marginTop: 2 }}>
-              Semana {exercises[0]?.weekLabels?.[nextWeek] || nextWeek+1}
-              {prevWeek >= 0 ? ` · ref. ${exercises[0]?.weekLabels?.[prevWeek] || prevWeek+1}` : ""}
+      {/* ── Header: session, progress, sync ── */}
+      <div style={{ position: "sticky", top: 0, zIndex: 10, background: D.bg, padding: "calc(14px + env(safe-area-inset-top)) 16px 12px" }}>
+        <div style={{ maxWidth: 480, margin: "0 auto" }}>
+          <div style={row({ justifyContent: "space-between", alignItems: "center", marginBottom: 10 })}>
+            <button onClick={onBack} style={{ background: D.card2, border: `1px solid ${D.border}`, color: D.text, borderRadius: 10, padding: "9px 14px", fontSize: 13, cursor: "pointer" }}>‹ Salir</button>
+            <div onClick={pendingN > 0 ? onSync : undefined}
+              style={{ padding: "5px 11px", borderRadius: 20, fontSize: 10, fontFamily: D.mono,
+                cursor: pendingN > 0 ? "pointer" : "default",
+                background: pendingN > 0 ? "#3a2a00" : "#0f2a12",
+                border: `1px solid ${pendingN > 0 ? "#8a6d00" : "#1e5228"}`,
+                color: pendingN > 0 ? "#ffc933" : "#5fd97a" }}>
+              {saving ? "↻ sincronizando" : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""}` : "✓ sincronizado"}
             </div>
           </div>
-          {/* Sync status badge */}
-          <div onClick={pendingN > 0 ? onSync : undefined}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, padding: "5px 12px", borderRadius: 20,
-              background: pendingN > 0 ? "#3a2a00" : "#0f2a12",
-              border: `1px solid ${pendingN > 0 ? "#8a6d00" : "#1e5228"}`,
-              cursor: pendingN > 0 ? "pointer" : "default", fontSize: 11, fontFamily: D.mono,
-              color: pendingN > 0 ? "#ffc933" : "#5fd97a" }}>
-            {saving ? "↻ sincronizando..." : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""} — tocar para sincronizar` : "✓ todo sincronizado"}
+          <div style={{ fontSize: 19, fontWeight: 800, color: D.accent, letterSpacing: -0.4 }}>{session}</div>
+          <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono, marginTop: 2 }}>
+            Semana {ex.weekLabels?.[nextWeek] || nextWeek + 1}
           </div>
-          {filledCount > 0 && (
-            <div style={{ background: D.accentDim, border: `1px solid ${D.accent}30`, borderRadius: 20, padding: "4px 12px", fontSize: 11, color: D.accent, fontWeight: 700 }}>
-              {filledCount}/{exercises.length}
+          <div style={{ marginTop: 10 }}>
+            <div style={{ height: 4, background: D.card2, borderRadius: 2, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${pct}%`, background: D.accent, borderRadius: 2, transition: "width .35s ease" }} />
             </div>
-          )}
+            <div style={row({ justifyContent: "space-between", marginTop: 5 })}>
+              <span style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>Ejercicio {exIdx + 1} de {exercises.length}</span>
+              <span style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>{doneCount} completados</span>
+            </div>
+          </div>
         </div>
-
-        {/* Exercises */}
-        {exercises.map(ex => {
-          const isOpen = openEx === ex.name
-          const fEx = form[ex.name] || []
-          const filled = fEx.filter(s => s.kg || s.reps).length
-          const displayName = substitutions[ex.name] || ex.name
-          const currentSlot = ex.sets[0]?.slots[nextWeek]
-          // alreadyDone: visual indicator only — all sets have saved data AND form is untouched
-          // Never blocks inputs — user can always fill in the form
-          const allSetsHaveData = ex.sets.every(set => {
-            const slot = set.slots[nextWeek]
-            return slot && (
-              (slot.reps !== "" && !isNaN(parseFloat(slot.reps))) ||
-              (slot.kg !== "" && !isNaN(parseFloat(slot.kg)) && parseFloat(slot.kg) > 0)
-            )
-          })
-          const formHasData = fEx.some(s => s.kg || s.reps)
-          const alreadyDone = allSetsHaveData && !formHasData
-
-          return (
-            <div key={ex.name} style={{ ...card({ marginBottom: 10, overflow: "hidden", border: `1px solid ${alreadyDone ? D.done+"30" : filled > 0 ? D.accent+"25" : D.border}` }) }}>
-
-              {/* Exercise header */}
-              <div onClick={() => setOpenEx(isOpen ? null : ex.name)}
-                style={{ padding: "16px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
-                <div style={{ flex: 1, marginRight: 12 }}>
-                  <div style={row({ gap: 8, flexWrap: "wrap", marginBottom: 4 })}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: alreadyDone ? D.done : filled > 0 ? D.accent : D.text }}>
-                      {displayName}
-                    </div>
-                    {alreadyDone && <div style={{ fontSize: 10, color: D.done, background: D.done+"15", borderRadius: 20, padding: "2px 8px" }}>✓ HECHO</div>}
-                    {substitutions[ex.name] && <div style={{ fontSize: 10, color: D.orange, background: D.orange+"15", borderRadius: 20, padding: "2px 8px" }}>CAMBIADO</div>}
-                    {ex.isStagnant && !alreadyDone && <div style={{ fontSize: 10, color: D.orange }}>⚠ estancado</div>}
-                  </div>
-                  <div style={{ fontSize: 12, color: D.muted }}>
-                    {ex.sets.length} series
-                    {filled > 0 && !alreadyDone ? ` · ${filled} registradas` : ""}
-                    {ex.pr ? ` · PR ${ex.pr.kg}kg` : ""}
-                  </div>
-                </div>
-                <div style={{ fontSize: 20, color: isOpen ? D.accent : D.muted, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }}>⌄</div>
-              </div>
-
-              {isOpen && (
-                <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${D.border}` }}>
-
-                  {/* Already done */}
-                  {alreadyDone && (
-                    <div style={{ background: D.doneDim, border: `1px solid ${D.done}20`, borderRadius: 12, padding: "14px 16px", marginTop: 14, marginBottom: 4 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: D.done, marginBottom: 8 }}>✓ Ya registrado esta semana</div>
-                      <div style={row({ gap: 8, flexWrap: "wrap" })}>
-                        {ex.sets.map((set, si) => {
-                          const slot = set.slots[nextWeek]
-                          if (!slot?.kg && !slot?.reps) return null
-                          return (
-                            <div key={si} style={{ background: "#0A1A0A", borderRadius: 10, padding: "10px 14px", textAlign: "center", minWidth: 70 }}>
-                              <div style={{ fontSize: 10, color: D.muted, marginBottom: 4, fontFamily: D.mono }}>{set.label.replace(" SERIE","ª")}</div>
-                              <div style={{ fontSize: 20, fontWeight: 800, color: D.done }}>{slot.kg || "—"}</div>
-                              <div style={{ fontSize: 10, color: D.muted }}>kg</div>
-                              {slot.reps && <div style={{ fontSize: 14, fontWeight: 700, color: D.text, marginTop: 2 }}>{slot.reps}<span style={{ fontSize: 10, color: D.muted }}>r</span></div>}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Stagnation */}
-                  {ex.isStagnant && !formHasData && (
-                    <div style={{ background: "#180F00", border: `1px solid ${D.orange}25`, borderRadius: 10, padding: "10px 14px", marginTop: 14, marginBottom: 4, fontSize: 12, color: D.orange }}>
-                      ⚠️ Sin mejora en 3+ semanas · considera ajustar carga
-                    </div>
-                  )}
-
-                  {/* Input section — always shown */}
-                  {ex.sets.map((set, si) => {
-                    const f = fEx[si] || { kg: "", reps: "", rir: "", notes: "" }
-                    const lastRec = prevWeek >= 0 ? findLastRecorded(set.slots, prevWeek) : null
-                    const prev = lastRec?.slot || null
-                    const refWeekIdx = lastRec?.weekIdx ?? -1
-                    const weeksAgo = refWeekIdx >= 0 ? nextWeek - refWeekIdx : 0
-                    const pKg = prev?.kg || null
-                    const pReps = prev?.reps || null
-                    const repsObj = editedRepsObj[ex.name]?.[si] ?? set.repsObj
-                    const rec = getLoadRec(prev?.reps, repsObj)
-                    const suggestion = suggestProgression(prev?.kg, prev?.reps, repsObj)
-
-                    return (
-                      <div key={si} style={{ marginTop: 16 }}>
-                        {/* Serie label */}
-                        <div style={row({ justifyContent: "space-between", marginBottom: 10 })}>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: si === 0 ? D.accent : D.muted, fontFamily: D.mono }}>
-                            {set.label}
-                          </div>
-                          {repsObj && <div style={{ fontSize: 11, color: D.muted }}>obj. {repsObj} reps</div>}
-                        </div>
-
-                        {/* Load rec */}
-                        {rec && rec.type !== "ok" && (
-                          <div style={{ background: rec.type === "up" ? "#081A08" : "#180808", border: `1px solid ${rec.type === "up" ? D.green : D.red}20`, borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: rec.type === "up" ? D.green : D.red, fontWeight: 600 }}>
-                            {rec.type === "up" ? "⬆" : "⬇"} {rec.msg}
-                          </div>
-                        )}
-
-                        {/* Progression suggestion — visually dominant */}
-                        {suggestion && (
-                          <div style={{ background: suggestion.type === "weight" ? "#0D1A00" : "#00101A", border: `2px solid ${suggestion.type === "weight" ? D.accent : D.blue}40`, borderRadius: 14, padding: "16px", marginBottom: 14 }}>
-                            <div style={{ fontSize: 11, fontWeight: 800, color: suggestion.type === "weight" ? D.accent : D.blue, letterSpacing: 2, marginBottom: 12, fontFamily: D.mono }}>
-                              {suggestion.type === "weight" ? "⬆ SUBE PESO" : "⬆ SUBE REPS"}
-                            </div>
-                            <div style={row({ gap: 10, alignItems: "center", marginBottom: 10 })}>
-                              <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
-                                <div style={{ fontSize: 9, color: suggestion.type === "weight" ? D.accent : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>KG</div>
-                                <div style={{ fontSize: 32, fontWeight: 900, color: suggestion.type === "weight" ? D.accent : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.kg}</div>
-                              </div>
-                              <div style={{ fontSize: 18, color: D.muted }}>×</div>
-                              <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
-                                <div style={{ fontSize: 9, color: suggestion.type === "reps" ? D.blue : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>REPS</div>
-                                <div style={{ fontSize: 32, fontWeight: 900, color: suggestion.type === "reps" ? D.blue : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.reps}</div>
-                              </div>
-                              <button onClick={() => {
-                                const kgStr = String(suggestion.kg);
-                                const repsStr = String(suggestion.reps);
-                                onSet(ex.name, si, "kg", kgStr);
-                                onSet(ex.name, si, "reps", repsStr);
-                                const slot = set.slots[nextWeek];
-                                if (slot) {
-                                  onAutoSave(ex.name, si, "kg", kgStr, slot);
-                                  onAutoSave(ex.name, si, "reps", repsStr, slot);
-                                }
-                              }}
-                                style={{ background: suggestion.type === "weight" ? D.accent : D.blue, color: D.bg, border: "none", borderRadius: 12, padding: "14px 18px", fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: D.font, letterSpacing: 0.5 }}>
-                                USAR
-                              </button>
-                            </div>
-                            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>{suggestion.reason}</div>
-                          </div>
-                        )}
-
-                        {/* Prev week reference — smaller, below suggestion */}
-                        {refWeekIdx >= 0 && (pKg || pReps) && (
-                          <div style={{ background: D.card2, borderRadius: 10, padding: "8px 14px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>
-                              {weeksAgo <= 1 ? "SEMANA ANT." : `HACE ${weeksAgo} SEMANAS`} · {ex.weekLabels?.[refWeekIdx]}
-                            </div>
-                            <div style={row({ gap: 14 })}>
-                              {pKg && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pKg}</span><span style={{ fontSize: 10, color: D.muted }}> kg</span></div>}
-                              {pReps && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pReps}</span><span style={{ fontSize: 10, color: D.muted }}> r</span></div>}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* BIG INPUT BUTTONS */}
-                        <div style={row({ gap: 8, marginBottom: 8 })}>
-                          {[
-                            { field: "kg", label: "KG", unit: "kg" },
-                            { field: "reps", label: "REPS", unit: "reps" },
-                            { field: "rir", label: "RIR", unit: "rir" },
-                          ].map(({ field, label, unit }) => (
-                            <button key={field} onClick={() => setNumPad({
-                              exName: ex.name, si, field,
-                              value: f[field] || "",
-                              label: `${ex.name.substring(0,20)} · ${set.label} · ${label}`,
-                              hint: field === "kg" && pKg ? `Semana anterior: ${pKg}kg` : field === "reps" && pReps ? `Objetivo: ${repsObj || pReps} reps` : null,
-                              slot: set.slots[nextWeek],
-                            })}
-                              style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${failedCells[`${ex.name}-${si}-${field}`] ? D.red : f[field] ? (field === "kg" ? D.accent+"40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
-                              <div style={{ fontSize: 10, color: failedCells[`${ex.name}-${si}-${field}`] ? D.red : D.muted, marginBottom: 4, fontFamily: D.mono }}>{failedCells[`${ex.name}-${si}-${field}`] ? "⚠ "+label : label}</div>
-                              <div style={{ fontSize: f[field] ? 28 : 20, fontWeight: 800, color: failedCells[`${ex.name}-${si}-${field}`] ? D.red : f[field] ? (field === "kg" ? D.accent : D.text) : D.muted, fontFamily: D.mono }}>
-                                {f[field] || "—"}
-                              </div>
-                              {f[field] && <div style={{ fontSize: 10, color: failedCells[`${ex.name}-${si}-${field}`] ? D.red : D.muted, marginTop: 2 }}>{failedCells[`${ex.name}-${si}-${field}`] ? "no guardado" : unit}</div>}
-                            </button>
-                          ))}
-                        </div>
-
-                        {/* Notes */}
-                        <input type="text" value={f.notes || ""} onChange={e => onSet(ex.name, si, "notes", e.target.value)}
-                          onBlur={e => { const v = e.target.value; if (v) { const slot = set.slots[nextWeek]; if (slot) onAutoSave(ex.name, si, "notes", v, slot); } }}
-                          placeholder="Nota..." style={{ ...inp, fontSize: 13, padding: "10px 14px" }} />
-
-                        {/* Timer — shown after reps filled */}
-                        {f.reps && (
-                          <div style={row({ gap: 8, marginTop: 10 })}>
-                            <div style={{ fontSize: 11, color: D.muted }}>Descanso:</div>
-                            {[["1'30\"", 90], ["2'", 120], ["3'", 180]].map(([label, secs]) => (
-                              <button key={secs} onClick={() => startTimer(secs)}
-                                style={{ background: D.card2, border: `1px solid ${D.border}`, borderRadius: 8, padding: "6px 12px", fontSize: 12, color: D.muted, cursor: "pointer", fontFamily: D.mono }}>
-                                {label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-
-                  {/* Edit button */}
-                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${D.border}`, display: "flex", gap: 10 }}>
-                    <button onClick={() => openSubModal(ex)}
-                      style={{ background: D.card2, border: `1px solid ${D.border}`, borderRadius: 10, padding: "10px 16px", fontSize: 12, color: D.muted, cursor: "pointer", fontFamily: D.font }}>
-                      ✏ Editar ejercicio
-                    </button>
-                    {(substitutions[ex.name] || editedRepsObj[ex.name]) && (
-                      <button onClick={() => { setSubstitutions(p => { const n = { ...p }; delete n[ex.name]; return n }); setEditedRepsObj(p => { const n = { ...p }; delete n[ex.name]; return n }) }}
-                        style={{ background: "none", border: "none", color: D.red, fontSize: 12, cursor: "pointer", fontFamily: D.font }}>
-                        Resetear
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        })}
       </div>
 
-      {/* Save bar */}
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: `linear-gradient(transparent, ${D.bg} 40%)`, padding: "20px 16px env(safe-area-inset-bottom,24px)" }}>
-        <div style={{ maxWidth: 480, margin: "0 auto" }}>
-          {saveError && (
-            <div style={{ background: "#1A0808", border: `1px solid ${D.red}30`, borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: D.red }}>
-              {saveError}
-            </div>
-          )}
-          <div style={{ position: "relative" }}>
-            {saving && (
-              <div style={{ textAlign: "center", fontSize: 11, color: D.muted, marginBottom: 8 }}>
-                ☁ Guardando...
-              </div>
-            )}
-            <button onClick={onFinish}
-              style={{ width: "100%", background: D.accent, color: D.bg, fontFamily: D.font, fontWeight: 800, fontSize: 16, padding: "18px 0", borderRadius: 16, border: "none", cursor: "pointer", letterSpacing: 0.5 }}>
-              ✓ Terminar sesión
-            </button>
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "4px 16px 120px" }}>
+
+        {/* ── Exercise ── */}
+        <div style={row({ justifyContent: "space-between", alignItems: "flex-start", gap: 10, margin: "8px 0 3px" })}>
+          <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: -0.5, lineHeight: 1.15, flex: 1 }}>
+            {displayName}
           </div>
+          {exDone(ex) && <div style={{ fontSize: 10, color: D.done, background: D.done + "18", borderRadius: 20, padding: "4px 10px", whiteSpace: "nowrap" }}>✓ HECHO</div>}
+        </div>
+        <div style={{ fontSize: 11, color: D.muted, fontFamily: D.mono, marginBottom: 14 }}>
+          {ex.sets.length} series{repsObj ? ` · objetivo ${repsObj} reps` : ""}
+          {substitutions[ex.name] ? " · cambiado" : ""}
+        </div>
+
+        {/* Series tabs */}
+        <div style={row({ gap: 7, marginBottom: 14 })}>
+          {ex.sets.map((s, si) => {
+            const done = setDone(ex, si)
+            const active = si === setIdx
+            return (
+              <button key={si} onClick={() => { setSetIdx(si); setRestOffer(false) }}
+                style={{ flex: 1, padding: "10px 0", borderRadius: 12, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                  background: active ? D.accent : done ? D.accentDim : D.card,
+                  color: active ? D.bg : done ? D.accent : D.faint || D.muted,
+                  border: `1px solid ${active ? D.accent : done ? D.accent + "40" : D.border}` }}>
+                S{si + 1}{done && !active ? " ✓" : ""}
+              </button>
+            )
+          })}
+        </div>
+
+        {ex.isStagnant && (
+          <div style={{ background: "#180F00", border: `1px solid ${D.orange}25`, borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: D.orange }}>
+            ⚠️ Sin mejora en 3+ semanas · considera ajustar carga
+          </div>
+        )}
+        {loadRec && loadRec.type !== "ok" && (
+          <div style={{ background: loadRec.type === "up" ? "#081A08" : "#180808", border: `1px solid ${loadRec.type === "up" ? D.green : D.red}20`, borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: loadRec.type === "up" ? D.green : D.red, fontWeight: 600 }}>
+            {loadRec.type === "up" ? "⬆" : "⬇"} {loadRec.msg}
+          </div>
+        )}
+
+        {/* Suggestion */}
+        {suggestion && (
+          <div style={{ background: suggestion.type === "weight" ? "#0D1A00" : "#00101A", border: `2px solid ${suggestion.type === "weight" ? D.accent : D.blue}40`, borderRadius: 14, padding: 16, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: suggestion.type === "weight" ? D.accent : D.blue, letterSpacing: 2, marginBottom: 12, fontFamily: D.mono }}>
+              {suggestion.type === "weight" ? "⬆ SUBE PESO" : "⬆ SUBE REPS"}
+            </div>
+            <div style={row({ gap: 10, alignItems: "center", marginBottom: 10 })}>
+              <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+                <div style={{ fontSize: 9, color: suggestion.type === "weight" ? D.accent : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>KG</div>
+                <div style={{ fontSize: 30, fontWeight: 900, color: suggestion.type === "weight" ? D.accent : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.kg}</div>
+              </div>
+              <div style={{ fontSize: 18, color: D.muted }}>×</div>
+              <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+                <div style={{ fontSize: 9, color: suggestion.type === "reps" ? D.blue : D.muted, letterSpacing: 2, marginBottom: 4, fontFamily: D.mono }}>REPS</div>
+                <div style={{ fontSize: 30, fontWeight: 900, color: suggestion.type === "reps" ? D.blue : D.muted, fontFamily: D.mono, letterSpacing: -1 }}>{suggestion.reps}</div>
+              </div>
+              <button onClick={() => {
+                const kgStr = String(suggestion.kg)
+                const repsStr = String(suggestion.reps)
+                onSet(ex.name, setIdx, "kg", kgStr)
+                onSet(ex.name, setIdx, "reps", repsStr)
+                const slot = set.slots[nextWeek]
+                if (slot) {
+                  onAutoSave(ex.name, setIdx, "kg", kgStr, slot)
+                  onAutoSave(ex.name, setIdx, "reps", repsStr, slot)
+                }
+                setRestOffer(true)
+              }}
+                style={{ background: suggestion.type === "weight" ? D.accent : D.blue, color: D.bg, border: "none", borderRadius: 12, padding: "14px 18px", fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: D.font, letterSpacing: 0.5 }}>
+                USAR
+              </button>
+            </div>
+            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>{suggestion.reason}</div>
+          </div>
+        )}
+
+        {/* Reference */}
+        {refWeekIdx >= 0 && (pKg || pReps) && (
+          <div style={{ background: D.card2, borderRadius: 10, padding: "8px 14px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono }}>
+              {weeksAgo <= 1 ? "SEMANA ANT." : `HACE ${weeksAgo} SEMANAS`} · {ex.weekLabels?.[refWeekIdx]}
+            </div>
+            <div style={row({ gap: 14 })}>
+              {pKg && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pKg}</span><span style={{ fontSize: 10, color: D.muted }}> kg</span></div>}
+              {pReps && <div><span style={{ fontSize: 16, fontWeight: 700, color: D.muted }}>{pReps}</span><span style={{ fontSize: 10, color: D.muted }}> r</span></div>}
+            </div>
+          </div>
+        )}
+
+        {/* Inputs */}
+        <div style={row({ gap: 8, marginBottom: 8 })}>
+          {[{ field: "kg", label: "KG", unit: "kg" }, { field: "reps", label: "REPS", unit: "reps" }, { field: "rir", label: "RIR", unit: "rir" }].map(({ field, label, unit }) => {
+            const failed = failedCells[`${ex.name}-${setIdx}-${field}`]
+            return (
+              <button key={field} onClick={() => setNumPad({
+                exName: ex.name, si: setIdx, field, value: f[field] || "",
+                label: `${displayName.substring(0, 20)} · ${set.label} · ${label}`,
+                hint: field === "kg" && pKg ? `Referencia: ${pKg}kg` : field === "reps" && (repsObj || pReps) ? `Objetivo: ${repsObj || pReps} reps` : null,
+                slot: set.slots[nextWeek],
+              })}
+                style={{ flex: field === "rir" ? 0.7 : 1, background: f[field] ? (field === "kg" ? D.accentDim : D.card2) : D.card2, border: `1px solid ${failed ? D.red : f[field] ? (field === "kg" ? D.accent + "40" : D.border) : D.border}`, borderRadius: 12, padding: "16px 8px", textAlign: "center", cursor: "pointer" }}>
+                <div style={{ fontSize: 10, color: failed ? D.red : D.muted, marginBottom: 4, fontFamily: D.mono }}>{failed ? "⚠ " + label : label}</div>
+                <div style={{ fontSize: f[field] ? 28 : 20, fontWeight: 800, color: failed ? D.red : f[field] ? (field === "kg" ? D.accent : D.text) : D.muted, fontFamily: D.mono }}>{f[field] || "—"}</div>
+                {f[field] && <div style={{ fontSize: 10, color: failed ? D.red : D.muted, marginTop: 2 }}>{failed ? "no guardado" : unit}</div>}
+              </button>
+            )
+          })}
+        </div>
+
+        <input type="text" value={f.notes || ""} onChange={e => onSet(ex.name, setIdx, "notes", e.target.value)}
+          onBlur={e => { const v = e.target.value; if (v) { const slot = set.slots[nextWeek]; if (slot) onAutoSave(ex.name, setIdx, "notes", v, slot) } }}
+          placeholder="Nota..." style={{ ...inp, fontSize: 13, padding: "10px 14px" }} />
+
+        {/* Rest timer — offered as soon as reps are in */}
+        {(restOffer || f.reps) && (
+          <div style={{ background: D.card, border: `1px solid ${D.border}`, borderRadius: 14, padding: 14, marginTop: 12 }}>
+            <div style={{ fontSize: 10, color: D.muted, fontFamily: D.mono, marginBottom: 9, textAlign: "center" }}>DESCANSO</div>
+            <div style={row({ gap: 8 })}>
+              {[["1'30", 90], ["2'", 120], ["3'", 180]].map(([label, secs]) => (
+                <button key={secs} onClick={() => startTimer(secs)}
+                  style={{ flex: 1, background: D.card2, border: `1px solid ${D.border}`, color: D.text, borderRadius: 12, padding: "15px 0", fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: D.mono }}>
+                  ▶ {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Next series shortcut */}
+        {setIdx < ex.sets.length - 1 && (
+          <button onClick={() => { setSetIdx(setIdx + 1); setRestOffer(false); window.scrollTo(0, 0) }}
+            style={{ width: "100%", marginTop: 12, background: "none", border: `1px dashed ${D.border}`, color: D.muted, borderRadius: 12, padding: "13px 0", fontSize: 13, cursor: "pointer" }}>
+            Siguiente serie · S{setIdx + 2} ›
+          </button>
+        )}
+
+        <button onClick={() => openSubModal(ex)}
+          style={{ width: "100%", marginTop: 12, background: "none", border: "none", color: D.muted, fontSize: 12, padding: "10px 0", cursor: "pointer", fontFamily: D.font }}>
+          ✏ Editar ejercicio
+        </button>
+
+        {saveError && (
+          <div style={{ background: "#1A0808", border: `1px solid ${D.red}30`, borderRadius: 10, padding: "10px 14px", marginTop: 12, fontSize: 12, color: D.red }}>
+            {saveError}
+          </div>
+        )}
+      </div>
+
+      {/* ── Bottom nav ── */}
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: `linear-gradient(transparent, ${D.bg} 35%)`, padding: "14px 16px calc(16px + env(safe-area-inset-bottom))" }}>
+        <div style={{ maxWidth: 480, margin: "0 auto", display: "flex", gap: 9 }}>
+          <button onClick={() => goEx(Math.max(0, exIdx - 1))} disabled={exIdx === 0}
+            style={{ flex: 0.55, background: D.card2, border: `1px solid ${D.border}`, color: exIdx === 0 ? D.border : D.muted, borderRadius: 14, padding: "16px 0", fontSize: 14, fontWeight: 700, cursor: exIdx === 0 ? "default" : "pointer" }}>
+            ‹ Anterior
+          </button>
+          <button onClick={() => isLast ? onFinish() : goEx(exIdx + 1)}
+            style={{ flex: 1.45, background: isLast ? D.blue : D.accent, color: D.bg, border: "none", borderRadius: 14, padding: "16px 8px", fontSize: 14, fontWeight: 800, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {isLast ? "Terminar sesión ✓" : `Siguiente: ${(substitutions[exercises[exIdx + 1].name] || exercises[exIdx + 1].name).split(" ").slice(0, 2).join(" ")} ›`}
+          </button>
         </div>
       </div>
     </div>
