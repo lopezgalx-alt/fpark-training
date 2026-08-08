@@ -143,7 +143,7 @@ function fmtDelta(v, dec) {
   return { txt: (v > 0 ? "+" : "−") + s, color: v > 0 ? "#60A5FA" : "#F59E0B" };
 }
 
-export default function Medidas({ rows, onOpenPad, onSetDate, onBackfillDates, onSync, pendingN, saving, onBack }) {
+export default function Medidas({ rows, onOpenPad, onSetDate, onBackfillDates, onSync, pendingN, offline, saving, onBack }) {
   const [tab, setTab] = useState("entrada");
   const [selField, setSelField] = useState("peso");
 
@@ -182,7 +182,7 @@ export default function Medidas({ rows, onOpenPad, onSetDate, onBackfillDates, o
               background: pendingN > 0 ? "#3a2a00" : "#0f2a12",
               border: `1px solid ${pendingN > 0 ? "#8a6d00" : "#1e5228"}`,
               color: pendingN > 0 ? "#ffc933" : "#5fd97a" }}>
-            {saving ? "↻ sincronizando" : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""}` : "✓ sincronizado"}
+            {saving ? "↻ sincronizando" : offline && pendingN > 0 ? `⚡ sin conexión · ${pendingN}` : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""}` : "✓ sincronizado"}
           </div>
         </div>
         <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.3 }}>Medidas</div>

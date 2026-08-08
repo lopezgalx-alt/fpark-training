@@ -451,12 +451,32 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
 
   // Push all pending writes to Sheets in one batch per sheet.
   // Called after every save, every 30s, on reconnect, and on app focus.
+  // Backoff state for failed syncs — without it, a failed flush re-triggered
+  // itself immediately and hammered the network in a loop while offline.
+  const backoff = useRef(0);        // consecutive failures
+  const retryTimer = useRef(null);
+  const [offline, setOffline] = useState(typeof navigator !== "undefined" && navigator.onLine === false);
+
+  const scheduleRetry = () => {
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+    // 5s, 10s, 20s, 40s, then every 60s
+    const delay = Math.min(5000 * Math.pow(2, Math.max(0, backoff.current - 1)), 60000);
+    retryTimer.current = setTimeout(() => { retryTimer.current = null; flushRef.current(); }, delay);
+  };
+
   const flushQueue = async () => {
     if (flushing.current) return;
     const items = loadPending();
-    if (!items.length) { refreshPendingUI(); return; }
+    if (!items.length) { backoff.current = 0; refreshPendingUI(); return; }
+    // Don't even try when the device knows it's offline
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setOffline(true);
+      refreshPendingUI();
+      return;                       // 'online' event will wake us up
+    }
     flushing.current = true;
     setSaving(true);
+    let ok = true;
     try {
       const bySheet = {};
       items.forEach(it => { (bySheet[it.sheetName] = bySheet[it.sheetName] || []).push(it); });
@@ -465,17 +485,25 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         await onSave(sheet, its.map(it => ({ row: it.row, col: it.col, value: it.value })));
         removeSynced(its.map(it => it.id));
       }
-      setSaveError(null);
     } catch (e) {
-      // Data is safe in localStorage — will retry automatically
-      setSaveError(null);
+      ok = false;
     } finally {
       flushing.current = false;
       setSaving(false);
       refreshPendingUI();
-      // Items enqueued while this flush was running would otherwise wait
-      // for the 30s timer — send them now.
-      if (loadPending().length) setTimeout(() => flushRef.current(), 0);
+    }
+
+    if (ok) {
+      backoff.current = 0;
+      setOffline(false);
+      setSaveError(null);
+      if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
+      // Anything enqueued while this flush ran goes out now
+      if (loadPending().length) setTimeout(() => flushRef.current(), 250);
+    } else {
+      // Failed: back off instead of retrying immediately. Data stays safe locally.
+      backoff.current = Math.min(backoff.current + 1, 6);
+      scheduleRetry();
     }
   };
   const flushRef = useRef(flushQueue);
@@ -727,7 +755,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
   if (!state) return null;
 
   if (screen === "home")      return <Home sessions={state.sessions} fileName={fileName} onSession={openSession} onProgress={() => setScreen("progress")} onMedidas={() => setScreen("medidas")} onRealign={rebuildCalendar} onSignOut={onSignOut} />;
-  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} onSync={flushQueue} onBack={() => setScreen("home")} />;
+  if (screen === "log")       return <Log session={selSession} sd={state.sessions[selSession]} form={form} openEx={openEx} setOpenEx={setOpenEx} substitutions={substitutions} setSubstitutions={setSubstitutions} editedRepsObj={editedRepsObj} setEditedRepsObj={setEditedRepsObj} onSet={(ex, si, f, v) => setForm(p => { const s = [...(p[ex] || [])]; s[si] = { ...s[si], [f]: v }; return { ...p, [ex]: s }; })} onAutoSave={autoSaveCell} onFinish={finish} saving={saving} saveError={saveError} failedCells={failedCells} pendingN={pendingN} offline={offline} onSync={flushQueue} onBack={() => setScreen("home")} />;
   if (screen === "medidas")   return (<>
     {medPad && (
       <NumPad value={medPad.value} label={medPad.label} hint={medPad.hint}
@@ -735,7 +763,7 @@ export default function Tracker({ xlsxBuffer, fileName, onSave, onSignOut }) {
         onClose={() => setMedPad(null)} />
     )}
     {state.medidas
-    ? <Medidas rows={state.medidas} pendingN={pendingN} saving={saving} onSync={flushQueue} onSetDate={saveMedidaDate} onBackfillDates={backfillDates}
+    ? <Medidas rows={state.medidas} pendingN={pendingN} offline={offline} saving={saving} onSync={flushQueue} onSetDate={saveMedidaDate} onBackfillDates={backfillDates}
         onOpenPad={(rec, f) => setMedPad({ rec, field: f, value: rec.values[f.key] || "",
           label: `${f.label} · ${f.unit}`, hint: f.unit })}
         onBack={() => setScreen("home")} />
@@ -957,7 +985,7 @@ function Home({ sessions, fileName, onSession, onProgress, onMedidas, onRealign,
 }
 
 // ── LOG ────────────────────────────────────────────────────────────────────────
-function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, failedCells, pendingN, onSync, onBack }) {
+function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitutions, editedRepsObj, setEditedRepsObj, onSet, onAutoSave, onFinish, saving, saveError, failedCells, pendingN, offline, onSync, onBack }) {
   const [subModal, setSubModal] = useState(null)
   const [numPad, setNumPad] = useState(null)
   const [timer, setTimer] = useState(null)
@@ -1075,7 +1103,7 @@ function Log({ session, sd, form, openEx, setOpenEx, substitutions, setSubstitut
                 background: pendingN > 0 ? "#3a2a00" : "#0f2a12",
                 border: `1px solid ${pendingN > 0 ? "#8a6d00" : "#1e5228"}`,
                 color: pendingN > 0 ? "#ffc933" : "#5fd97a" }}>
-              {saving ? "↻ sincronizando" : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""}` : "✓ sincronizado"}
+              {saving ? "↻ sincronizando" : offline && pendingN > 0 ? `⚡ sin conexión · ${pendingN} en espera` : pendingN > 0 ? `● ${pendingN} pendiente${pendingN > 1 ? "s" : ""}` : "✓ sincronizado"}
             </div>
           </div>
           <div style={{ fontSize: 19, fontWeight: 800, color: D.accent, letterSpacing: -0.4 }}>{session}</div>
